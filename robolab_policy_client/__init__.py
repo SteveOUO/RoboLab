@@ -33,3 +33,9 @@ try:
     __all__.append("DreamZeroClient")
 except ImportError:
     pass
+
+try:
+    from .smartworld import SmartWorldDroidJointposClient
+    __all__.append("SmartWorldDroidJointposClient")
+except ImportError:
+    pass

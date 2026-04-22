@@ -10,8 +10,8 @@ from isaaclab.utils import configclass
 class OverShoulderLeftCameraCfg:
     external_cam = TiledCameraCfg(
         prim_path="{ENV_REGEX_NS}/external_cam",
-        height=720,
-        width=1280,
+        height=180,
+        width=320,
         data_types=["rgb"],
         spawn=sim_utils.PinholeCameraCfg(
             focal_length=2.1,
@@ -21,6 +21,21 @@ class OverShoulderLeftCameraCfg:
         ),
         offset=TiledCameraCfg.OffsetCfg(
             pos=(0.05, 0.57, 0.66), rot=(-0.393, -0.195, 0.399, 0.805), convention="opengl"
+        ),
+    )
+    external_cam_2 = TiledCameraCfg(
+        prim_path="{ENV_REGEX_NS}/external_cam_2",
+        height=180,
+        width=320,
+        data_types=["rgb"],
+        spawn=sim_utils.PinholeCameraCfg(
+            focal_length=2.1,
+            focus_distance=28.0,
+            horizontal_aperture=5.376,
+            vertical_aperture=3.024,
+        ),
+        offset=TiledCameraCfg.OffsetCfg(
+            pos=(0.05, -0.57, 0.66), rot=(0.805, 0.399, -0.195, -0.393), convention="opengl"
         ),
     )
 

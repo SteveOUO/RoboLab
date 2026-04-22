@@ -31,7 +31,7 @@ parser.add_argument("--tag", nargs='+', default=None,
                        help="List of tags of tasks to evaluate on ")
 parser.add_argument("--task-dirs", nargs='+', default=DEFAULT_TASK_SUBFOLDERS,
                        help="List of task directories to evaluate on")
-parser.add_argument("--policy", choices=["pi0", "pi0_fast", "paligemma", "paligemma_fast", "pi05", "gr00t", "dreamzero", "molmo", "openvla", "openvla_oft"], default="pi05",
+parser.add_argument("--policy", choices=["pi0", "pi0_fast", "paligemma", "paligemma_fast", "pi05", "gr00t", "dreamzero", "smartworld", "molmo", "openvla", "openvla_oft"], default="pi05",
                        help="Action-prediction backend to use (default: pi05)")
 parser.add_argument("--num-runs", "--num_runs", type=int, default=1,
                        help="Number of sequential runs per task (default: 1). Total episodes = num_runs * num_envs. Prefer increasing --num_envs for more episodes. Only increase --num-runs if you run out of GPU memory with the desired num_envs.")

@@ -127,7 +127,8 @@ class DreamZeroClient(InferenceClient):
     # ---- required hooks -----------------------------------------------
 
     def _extract_observation(self, raw_obs: dict, *, env_id: int = 0) -> dict:
-        right_image = raw_obs["image_obs"]["external_cam"][env_id].clone().detach().cpu().numpy()
+        external_image_0 = raw_obs["image_obs"]["external_cam"][env_id].clone().detach().cpu().numpy()
+        external_image_1 = raw_obs["image_obs"]["external_cam_2"][env_id].clone().detach().cpu().numpy()
         wrist_image = raw_obs["image_obs"]["wrist_cam"][env_id].clone().detach().cpu().numpy()
 
         robot_state = raw_obs["proprio_obs"]
@@ -139,7 +140,8 @@ class DreamZeroClient(InferenceClient):
             self._env_session_id[env_id] = str(uuid.uuid4())
 
         return {
-            "right_image": right_image,
+            "external_image_0": external_image_0,
+            "external_image_1": external_image_1,
             "wrist_image": wrist_image,
             "joint_position": joint_position,
             "gripper_position": gripper_position,
@@ -147,12 +149,12 @@ class DreamZeroClient(InferenceClient):
         }
 
     def _pack_request(self, extracted_obs: dict, instruction: str) -> dict:
-        right_resized = self._resize_image(extracted_obs["right_image"], self.image_height, self.image_width)
+        external_image_0 = self._resize_image(extracted_obs["external_image_0"], self.image_height, self.image_width)
+        external_image_1 = self._resize_image(extracted_obs["external_image_1"], self.image_height, self.image_width)
         wrist_resized = self._resize_image(extracted_obs["wrist_image"], self.image_height, self.image_width)
         return {
-            "observation/exterior_image_0_left": right_resized,
-            # Using same image for both when only one external camera is available
-            "observation/exterior_image_1_left": right_resized,
+            "observation/exterior_image_0_left": external_image_0,
+            "observation/exterior_image_1_left": external_image_1,
             "observation/wrist_image_left": wrist_resized,
             "observation/joint_position": extracted_obs["joint_position"],
             "observation/cartesian_position": np.zeros(6, dtype=np.float32),
@@ -188,9 +190,10 @@ class DreamZeroClient(InferenceClient):
         return chunk
 
     def _build_visualization(self, extracted_obs: dict) -> np.ndarray:
-        img1 = self._resize_image(extracted_obs["right_image"], self.image_height, self.image_width)
-        img2 = self._resize_image(extracted_obs["wrist_image"], self.image_height, self.image_width)
-        return np.concatenate([img1, img2], axis=1)
+        img1 = self._resize_image(extracted_obs["external_image_0"], self.image_height, self.image_width)
+        img2 = self._resize_image(extracted_obs["external_image_1"], self.image_height, self.image_width)
+        img3 = self._resize_image(extracted_obs["wrist_image"], self.image_height, self.image_width)
+        return np.concatenate([img1, img2, img3], axis=1)
 
     # ---- lifecycle overrides ------------------------------------------
 
@@ -356,6 +359,7 @@ if __name__ == "__main__":
     fake_obs = {
         "image_obs": {
             "external_cam": [torch.zeros((180, 320, 3), dtype=torch.uint8)],
+            "external_cam_2": [torch.zeros((180, 320, 3), dtype=torch.uint8)],
             "wrist_cam": [torch.zeros((180, 320, 3), dtype=torch.uint8)],
         },
         "proprio_obs": {

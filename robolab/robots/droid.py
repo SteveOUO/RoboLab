@@ -92,8 +92,8 @@ class DroidCfg:
 
     wrist_cam = TiledCameraCfg(
         prim_path="{ENV_REGEX_NS}/robot/Gripper/Robotiq_2F_85/base_link/wrist_cam",
-        height=720,
-        width=1280,
+        height=180,
+        width=320,
         data_types=["rgb"],
         spawn=sim_utils.PinholeCameraCfg(
             focal_length=2.8,
