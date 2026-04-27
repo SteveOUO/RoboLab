@@ -1,12 +1,84 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: CC-BY-NC-4.0
 
+import msgpack
 import numpy as np
 import torch
-
-from deployment.model_server.tools.websocket_policy_client import WebsocketClientPolicy
+import websockets.sync.client
 
 from robolab.eval.base_client import InferenceClient
+
+
+class MsgPackNumpy:
+    def pack(self, obj):
+        return msgpack.packb(obj, default=self._encode_numpy)
+
+    def unpack(self, data):
+        return msgpack.unpackb(data, object_hook=self._decode_numpy, strict_map_key=False)
+
+    def _encode_numpy(self, obj):
+        if isinstance(obj, np.ndarray):
+            if obj.dtype.kind in ("V", "O", "c"):
+                raise ValueError(f"Unsupported dtype: {obj.dtype}")
+            return {
+                b"__ndarray__": True,
+                b"data": obj.tobytes(),
+                b"dtype": obj.dtype.str,
+                b"shape": obj.shape,
+            }
+
+        if isinstance(obj, np.generic):
+            return {
+                b"__npgeneric__": True,
+                b"data": obj.item(),
+                b"dtype": obj.dtype.str,
+            }
+
+        return obj
+
+    def _decode_numpy(self, obj):
+        if b"__ndarray__" in obj:
+            return np.ndarray(buffer=obj[b"data"], dtype=np.dtype(obj[b"dtype"]), shape=obj[b"shape"])
+        if b"__npgeneric__" in obj:
+            return np.dtype(obj[b"dtype"]).type(obj[b"data"])
+        return obj
+
+
+class SmartWorldWebsocketClient:
+    def __init__(
+        self,
+        remote_host: str,
+        remote_port: int,
+        *,
+        ping_interval: float,
+        ping_timeout: float,
+    ) -> None:
+        self._uri = f"ws://{remote_host}:{remote_port}"
+        self._packer = MsgPackNumpy()
+        self._ws = websockets.sync.client.connect(
+            self._uri,
+            compression=None,
+            max_size=None,
+            ping_interval=ping_interval,
+            ping_timeout=ping_timeout,
+        )
+        metadata_bytes = self._ws.recv()
+        self._metadata = self._packer.unpack(metadata_bytes)
+        if not isinstance(self._metadata, dict):
+            raise TypeError(f"Expected server metadata dict, got {type(self._metadata)!r}.")
+
+    def get_server_metadata(self) -> dict:
+        return dict(self._metadata)
+
+    def predict_action(self, request: dict) -> dict:
+        self._ws.send(self._packer.pack(request))
+        response = self._packer.unpack(self._ws.recv())
+        if not isinstance(response, dict):
+            raise TypeError(f"Expected server response dict, got {type(response)!r}.")
+        return response
+
+    def close(self) -> None:
+        self._ws.close()
 
 
 class SmartWorldDroidJointposClient(InferenceClient):
@@ -17,7 +89,7 @@ class SmartWorldDroidJointposClient(InferenceClient):
         open_loop_horizon: int = 8,
     ) -> None:
         print(f"[{self.__class__.__name__}] Awaiting server on {remote_host}:{remote_port}...")
-        self.client = WebsocketClientPolicy(
+        self.client = SmartWorldWebsocketClient(
             remote_host,
             remote_port,
             ping_interval=300.0,
@@ -46,6 +118,9 @@ class SmartWorldDroidJointposClient(InferenceClient):
         self._env_step.pop(env_id, None)
         self._env_history_steps.pop(env_id, None)
         self._env_history_frames.pop(env_id, None)
+
+    def close(self) -> None:
+        self.client.close()
 
     def infer(self, obs: dict, instruction: str, *, env_id: int = 0) -> dict:
         curr_obs = self._extract_observation(obs, env_id=env_id)
