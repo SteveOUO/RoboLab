@@ -49,9 +49,6 @@ class SmartWorldWebsocketClient:
         self,
         remote_host: str,
         remote_port: int,
-        *,
-        ping_interval: float,
-        ping_timeout: float,
     ) -> None:
         self._uri = f"ws://{remote_host}:{remote_port}"
         self._packer = MsgPackNumpy()
@@ -59,8 +56,6 @@ class SmartWorldWebsocketClient:
             self._uri,
             compression=None,
             max_size=None,
-            ping_interval=ping_interval,
-            ping_timeout=ping_timeout,
         )
         metadata_bytes = self._ws.recv()
         self._metadata = self._packer.unpack(metadata_bytes)
@@ -92,8 +87,6 @@ class SmartWorldDroidJointposClient(InferenceClient):
         self.client = SmartWorldWebsocketClient(
             remote_host,
             remote_port,
-            ping_interval=300.0,
-            ping_timeout=300.0,
         )
         print(f"[{self.__class__.__name__}] Server metadata: {self.client.get_server_metadata()}")
 
