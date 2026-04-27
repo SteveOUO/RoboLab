@@ -180,6 +180,25 @@ class SmartWorldDroidJointposClient(InferenceClient):
         viz = np.concatenate([curr_obs["external_image_0"], curr_obs["external_image_1"], curr_obs["wrist_image"]], axis=1)
         return {"action": action, "viz": viz}
 
+    def _pack_request(self, extracted_obs: dict, instruction: str) -> dict:
+        return {
+            "observation/exterior_image_0_left": extracted_obs["external_image_0"],
+            "observation/exterior_image_1_left": extracted_obs["external_image_1"],
+            "observation/wrist_image_left": extracted_obs["wrist_image"],
+            "observation/joint_position": extracted_obs["joint_position"],
+            "observation/gripper_position": extracted_obs["gripper_position"],
+            "prompt": instruction,
+        }
+
+    def _query_server(self, request: dict) -> dict:
+        return self.client.predict_action(request)
+
+    def _unpack_response(self, response: dict) -> np.ndarray:
+        actions = np.asarray(response["actions"], dtype=np.float32)
+        if actions.ndim != 2:
+            raise ValueError(f"SmartWorld server must return action chunk [T,D], got shape={actions.shape}.")
+        return actions
+
     def _extract_observation(self, obs_dict: dict, *, env_id: int = 0) -> dict:
         external_image_0 = self._tensor_image_to_numpy(obs_dict["image_obs"]["external_cam"][env_id])
         external_image_1 = self._tensor_image_to_numpy(obs_dict["image_obs"]["external_cam_2"][env_id])
