@@ -77,12 +77,18 @@ class SmartWorldWebsocketClient:
 
 
 class SmartWorldDroidJointposClient(InferenceClient):
+    requires_dedicated_env_client = True
+
     def __init__(
         self,
         remote_host: str = "localhost",
         remote_port: int = 7777,
         open_loop_horizon: int = 8,
     ) -> None:
+        self.remote_host = remote_host
+        self.remote_port = int(remote_port)
+        self.open_loop_horizon = int(open_loop_horizon)
+
         print(f"[{self.__class__.__name__}] Awaiting server on {remote_host}:{remote_port}...")
         self.client = SmartWorldWebsocketClient(
             remote_host,
@@ -90,12 +96,18 @@ class SmartWorldDroidJointposClient(InferenceClient):
         )
         print(f"[{self.__class__.__name__}] Server metadata: {self.client.get_server_metadata()}")
 
-        self.open_loop_horizon = int(open_loop_horizon)
         self._env_chunk: dict[int, np.ndarray] = {}
         self._env_counter: dict[int, int] = {}
         self._env_step: dict[int, int] = {}
         self._env_history_steps: dict[int, list[int]] = {}
         self._env_history_frames: dict[int, list[np.ndarray]] = {}
+
+    def clone(self) -> "SmartWorldDroidJointposClient":
+        return type(self)(
+            remote_host=self.remote_host,
+            remote_port=self.remote_port,
+            open_loop_horizon=self.open_loop_horizon,
+        )
 
     def reset(self, *, env_id: int | None = None) -> None:
         self.client.predict_action({"reset": True})

@@ -16,8 +16,8 @@ from isaaclab.utils import configclass
 
 @configclass
 class MyExternalCameraCfg:
-    external_cam = TiledCameraCfg(
-        prim_path="{ENV_REGEX_NS}/external_cam",
+    over_shoulder_left_camera = TiledCameraCfg(
+        prim_path="{ENV_REGEX_NS}/over_shoulder_left_camera",
         height=720,
         width=1280,
         data_types=["rgb"],
@@ -51,7 +51,9 @@ RoboLab ships several scene camera presets in `robolab/variations/camera.py`:
 
 | Config | Attribute Name | Description |
 |--------|---------------|-------------|
-| `OverShoulderLeftCameraCfg` | `external_cam` | Over-the-shoulder view from the left |
+| `OverShoulderLeftCameraCfg` | `over_shoulder_left_camera` | Over-the-shoulder view from the left |
+| `OverShoulderRightCameraCfg` | `over_shoulder_right_camera` | Over-the-shoulder view from the right |
+| `HeadCameraCfg` | `head_camera` | Front overhead view (operator's eye) |
 | `EgocentricWideAngleCameraCfg` | `egocentric_wide_angle_camera` | Wide-angle front view |
 | `EgocentricMirroredCameraCfg` | `egocentric_mirrored_camera` | Front-facing mirrored view (480×864) |
 | `EgocentricMirroredWideAngleCameraCfg` | `egocentric_mirrored_wide_angle_camera` | Wide-angle front mirrored view |
@@ -107,7 +109,20 @@ When defining your own robot with a wrist camera, ensure the camera's `prim_path
 
 ## Wiring Cameras to Observations
 
-Camera names in the observation config must match the attribute names on the camera config classes. For example, if your scene camera config has an attribute `external_cam` and your robot config has `wrist_cam`, then your observation config references those same names:
+Camera names in the observation config must match the attribute names on the camera config classes. For example, if your scene camera config has an attribute `over_shoulder_left_camera` and your robot config has `wrist_cam`, then your observation config references those same names.
+
+The quickest path is to let RoboLab generate the observation group from the same list of camera configs you attach to the scene:
+
+```python
+from robolab.core.observations.observation_utils import generate_image_obs_from_cameras
+from robolab.registrations.droid_jointpos.camera_presets import WRIST_LEFT
+
+ImageObsCfg = generate_image_obs_from_cameras(WRIST_LEFT)
+```
+
+Any camera attached to the scene renders every step, so the preset should list exactly the cameras you want the policy to read. Available presets in `camera_presets.py`: `WRIST`, `WRIST_LEFT`, `WRIST_RIGHT`, `WRIST_LEFT_RIGHT`, `WRIST_LEFT_RIGHT_HEAD`, `LEFT_RIGHT`. Pass your chosen preset (or your own list) to `auto_register_droid_envs(cameras=...)`. Viewport-only cameras like `EgocentricMirroredCameraCfg` are attached separately for video recording and are not listed in the presets.
+
+**Define your own `ImageObsCfg` when you need per-camera customization** — different data types (e.g. depth), noise corruption, normalization flags, or reading the same tiled prim via multiple keys:
 
 ```python
 from isaaclab.managers import ObservationTermCfg as ObsTerm, SceneEntityCfg
@@ -115,9 +130,9 @@ import isaaclab.envs.mdp as mdp
 
 @configclass
 class ImageObsCfg(ObsGroup):
-    external_cam = ObsTerm(
+    over_shoulder_left_camera = ObsTerm(
         func=mdp.observations.image,
-        params={"sensor_cfg": SceneEntityCfg("external_cam"), "data_type": "rgb", "normalize": False},
+        params={"sensor_cfg": SceneEntityCfg("over_shoulder_left_camera"), "data_type": "rgb", "normalize": False},
     )
     wrist_cam = ObsTerm(
         func=mdp.observations.image,
@@ -129,7 +144,7 @@ class ImageObsCfg(ObsGroup):
         self.concatenate_terms = False
 ```
 
-The `SceneEntityCfg("external_cam")` string must match the **attribute name** on the camera config class (e.g., `OverShoulderLeftCameraCfg.external_cam`).
+The `SceneEntityCfg("over_shoulder_left_camera")` string must match the **attribute name** on the camera config class (e.g., `OverShoulderLeftCameraCfg.over_shoulder_left_camera`).
 
 ## Camera Pose Randomization
 
@@ -139,7 +154,7 @@ For robustness testing, you can randomize camera poses at episode reset. See [Ru
 from robolab.core.events.reset_camera import RandomizeCameraPoseUniform
 
 events = RandomizeCameraPoseUniform.from_params(
-    cameras=["external_cam"],
+    cameras=["over_shoulder_left_camera"],
     pose_range={"x": (-0.05, 0.05), "y": (-0.05, 0.05)},
 )
 env, env_cfg = create_env("BananaInBowlTask", events=events)

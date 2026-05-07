@@ -70,9 +70,9 @@ Each `run_{i}.hdf5` file contains the following hierarchical structure (`h5glanc
   │ │     └root_velocity  [float32: 1 × 6]
   │ ├obs
   │ │ ├arm_joint_pos      [float32: 470]
-  │ │ ├external_cam       [uint8: 470 × 720 × 1280 × 3]
+  │ │ ├over_shoulder_left_camera  [uint8: 470 × 720 × 1280 × 3]
   │ │ ├gripper_pos        [float32: 470]
-  │ │ └wrist_cam  [uint8: 470 × 720 × 1280 × 3]
+  │ │ └wrist_cam          [uint8: 470 × 720 × 1280 × 3]
   │ ├states
   │ │ ├articulation
   │ │ │ └robot

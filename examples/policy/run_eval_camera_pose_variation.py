@@ -74,7 +74,6 @@ from robolab.constants import PACKAGE_DIR, set_output_dir # noqa
 from robolab.core.environments.runtime import create_env # noqa
 from robolab.eval import create_client, run_episode, summarize_run # noqa
 from robolab.registrations.droid_jointpos.auto_env_registrations import auto_register_droid_envs # noqa
-from robolab.core.logging.recorder_manager import patch_recorder_manager # noqa
 from robolab.core.environments.factory import get_envs # noqa
 from robolab.core.logging.results import check_all_episodes_complete, check_run_complete # noqa
 from robolab.core.logging.results import init_experiment, summarize_experiment_results # noqa
@@ -85,7 +84,7 @@ import robolab.constants # noqa
 ########################################################
 # Camera pose variation settings (edit these values)
 ########################################################
-CAMERA_NAMES_EXTERNAL = ["external_cam"]
+CAMERA_NAMES_EXTERNAL = ["over_shoulder_left_camera"]
 CAMERA_POSE_RANGE_EXTERNAL = {
     "x": (-0.2, 0.2),
     "y": (-0.2, 0.2),
@@ -105,14 +104,14 @@ CAMERA_POSE_RANGE_WRIST = {
 
 camera_pose_events = [
     {
-        "randomize_external_cam": EventTerm(func=reset_camera_pose_uniform, mode="reset",params={"camera_names": CAMERA_NAMES_EXTERNAL, "pose_range": CAMERA_POSE_RANGE_EXTERNAL,})
+        "randomize_external_camera": EventTerm(func=reset_camera_pose_uniform, mode="reset",params={"camera_names": CAMERA_NAMES_EXTERNAL, "pose_range": CAMERA_POSE_RANGE_EXTERNAL,})
     },
     {
         "randomize_wrist_cam": EventTerm(func=reset_camera_pose_uniform, mode="reset",params={"camera_names": CAMERA_NAMES_WRIST, "pose_range": CAMERA_POSE_RANGE_WRIST,})
     },
     {
         "randomize_wrist_and_external_cam": EventTerm(func=reset_camera_pose_uniform, mode="reset",params={"camera_names": CAMERA_NAMES_WRIST, "pose_range": CAMERA_POSE_RANGE_WRIST,}),
-        "randomize_external_cam": EventTerm(func=reset_camera_pose_uniform, mode="reset",params={"camera_names": CAMERA_NAMES_EXTERNAL, "pose_range": CAMERA_POSE_RANGE_EXTERNAL,}),
+        "randomize_external_camera": EventTerm(func=reset_camera_pose_uniform, mode="reset",params={"camera_names": CAMERA_NAMES_EXTERNAL, "pose_range": CAMERA_POSE_RANGE_EXTERNAL,}),
     },
 ]
 ########################################################
@@ -122,9 +121,6 @@ robolab.constants.ENABLE_SUBTASK_PROGRESS_CHECKING = args_cli.enable_subtask
 robolab.constants.RECORD_IMAGE_DATA = args_cli.record_image_data
 robolab.constants.VERBOSE = args_cli.enable_verbose
 robolab.constants.DEBUG = args_cli.enable_debug
-
-# Fix recorder manager
-patch_recorder_manager()
 
 # Register environments (camera pose variation applied at runtime)
 auto_register_droid_envs(task_dirs=args_cli.task_dirs)

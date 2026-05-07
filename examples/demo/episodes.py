@@ -186,7 +186,7 @@ def run_empty_episode(env, env_cfg, num_envs, num_steps=50, episode=0, save_vide
         actions = sample_space(env.single_action_space, device=env.device, batch_size=num_envs)
 
         obs, _, term, trunc, info = env.step(actions)
-        frame = unpack_image_obs(obs, obs_group_name="image_obs", camera_suffix="_cam").get("external_cam")
+        frame = unpack_image_obs(obs, obs_group_name="image_obs", camera_suffix="_camera").get("over_shoulder_left_camera")
         if save_videos:
             video_writer.write(frame)
         if save_image:

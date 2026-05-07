@@ -10,14 +10,18 @@ Supports multi-env: one PolicyClient per env, per-env video writers,
 actions inferred per active env and stacked for env.step().
 """
 
+import logging
 import os
 import re
 import time
+from collections.abc import Sequence
 from collections import defaultdict
 
 import cv2
 import torch
 from tqdm import tqdm
+
+logger = logging.getLogger(__name__)
 
 class TimingStats:
     """Simple timing utility for profiling code sections."""
@@ -53,7 +57,28 @@ from robolab.core.world.world_state import get_world
 from robolab.eval.base_client import InferenceClient
 
 
-def run_episode(env, env_cfg, episode, client: InferenceClient, *, headless=False, save_videos=True, video_mode="all"):
+def _clients_for_envs(client: InferenceClient | Sequence[InferenceClient], num_envs: int) -> tuple[list[InferenceClient], list[InferenceClient]]:
+    if isinstance(client, Sequence) and not isinstance(client, InferenceClient):
+        clients = list(client)
+        if len(clients) != num_envs:
+            raise ValueError(f"Expected {num_envs} policy clients, got {len(clients)}.")
+        return clients, []
+
+    if not getattr(client, "requires_dedicated_env_client", False) or num_envs <= 1:
+        return [client] * num_envs, []
+
+    clone = getattr(client, "clone", None)
+    if not callable(clone):
+        raise TypeError(f"{type(client).__name__} requires one client per env but does not implement clone().")
+    created_clients = [clone() for _ in range(num_envs - 1)]
+    return [client, *created_clients], created_clients
+
+
+def _unique_clients(clients: Sequence[InferenceClient]) -> list[InferenceClient]:
+    return list(dict.fromkeys(clients))
+
+
+def run_episode(env, env_cfg, episode, client: InferenceClient | Sequence[InferenceClient], *, headless=False, save_videos=True, video_mode="all"):
     """Run a policy-controlled episode across all parallel envs.
 
     The policy client is constructed by the caller (typically via
@@ -63,8 +88,8 @@ def run_episode(env, env_cfg, episode, client: InferenceClient, *, headless=Fals
         env: The environment instance (RobolabEnv with num_envs >= 1)
         env_cfg: Environment configuration
         episode: Run index (each run produces num_envs episodes)
-        client: Constructed inference client. One connection shared across envs
-            with per-env chunk state keyed by ``env_id``.
+        client: Constructed inference client, or one client per env. Some
+            backends may request dedicated per-env sessions via ``clone()``.
         headless: If True, don't display video
         save_videos: If True, save per-env episode videos
         video_mode: Which videos to save: 'all', 'viewport', 'sensor', or 'none'
@@ -92,7 +117,7 @@ def run_episode(env, env_cfg, episode, client: InferenceClient, *, headless=Fals
 
     subtask_status = []
 
-    clients = [client] * env.num_envs
+    clients, created_clients = _clients_for_envs(client, env.num_envs)
 
     # Set up per-run HDF5 file and per-env demo indices
     if env.recorder_manager is not None and hasattr(env.recorder_manager, 'set_hdf5_file'):
@@ -104,9 +129,10 @@ def run_episode(env, env_cfg, episode, client: InferenceClient, *, headless=Fals
     save_sensor = save_videos and video_mode in ("all", "sensor")
     save_viewport = save_videos and video_mode in ("all", "viewport")
     cleaned_instruction = re.sub(r'[^\w\s]', '', instruction).replace(' ', '_')
+    # Define unconditionally so the finally clause below can iterate them either way.
+    video_writers_obs: list[VideoWriter] = []
+    video_writers_viewport: list[VideoWriter] = []
     if save_videos:
-        video_writers_obs = []
-        video_writers_viewport = []
         for env_id in range(env.num_envs):
             suffix = f"_{episode}_env{env_id}" if env.num_envs > 1 else f"_{episode}"
             if save_sensor:
@@ -122,62 +148,73 @@ def run_episode(env, env_cfg, episode, client: InferenceClient, *, headless=Fals
     kit_app = omni.kit.app.get_app()
 
     actual_steps = 0
-    for step in tqdm(range(max_steps)):
+    try:
+        for step in tqdm(range(max_steps)):
 
-        while not timeline.is_playing():
-            kit_app.update()
+            while not timeline.is_playing():
+                kit_app.update()
 
-        timer.start("policy_inference")
-        # Infer actions for all active (non-frozen) envs
-        actions = torch.zeros(env.num_envs, action_dim, device=env.device)
-        last_viz = None
-        for env_id in env.active_env_ids:
-            ret = clients[env_id].infer(obs, instruction, env_id=env_id)
-            actions[env_id] = torch.tensor(ret["action"], device=env.device)
-            if env_id == 0 or last_viz is None:
-                last_viz = ret.get("viz")
-        timer.stop("policy_inference")
+            timer.start("policy_inference")
+            # Infer actions for all active (non-frozen) envs
+            actions = torch.zeros(env.num_envs, action_dim, device=env.device)
+            last_viz = None
+            for env_id in env.active_env_ids:
+                ret = clients[env_id].infer(obs, instruction, env_id=env_id)
+                actions[env_id] = torch.tensor(ret["action"], device=env.device)
+                if env_id == 0 or last_viz is None:
+                    last_viz = ret.get("viz")
+            timer.stop("policy_inference")
 
-        if not headless and last_viz is not None:
-            cv2.imshow(f"{instruction}", cv2.cvtColor(last_viz, cv2.COLOR_RGB2BGR))
-            cv2.waitKey(1)
+            if not headless and last_viz is not None:
+                cv2.imshow(f"{instruction}", cv2.cvtColor(last_viz, cv2.COLOR_RGB2BGR))
+                cv2.waitKey(1)
 
-        if VISUALIZE:
-            get_world(env).visualize()
+            if VISUALIZE:
+                get_world(env).visualize()
 
-        timer.start("env_step")
-        obs, reward, term, trunc, info = env.step(actions)
-        timer.stop("env_step")
+            timer.start("env_step")
+            obs, reward, term, trunc, info = env.step(actions)
+            timer.stop("env_step")
 
-        # Collect per-env subtask info (list of dicts, one per env)
-        per_env_infos = get_all_env_subtask_infos(env)
-        subtask_status.append(per_env_infos)
+            # Collect per-env subtask info (list of dicts, one per env)
+            per_env_infos = get_all_env_subtask_infos(env)
+            subtask_status.append(per_env_infos)
 
-        # Write per-env video frames (skip frozen envs)
-        if save_videos:
-            timer.start("video_write")
-            for env_id in range(env.num_envs):
-                if env._frozen_envs[env_id]:
-                    continue
-                if save_sensor:
-                    frame_obs = unpack_image_obs(obs, scale=0.5, env_id=env_id).get("combined_image")
-                    video_writers_obs[env_id].write(frame_obs)
-                if save_viewport:
-                    frame_vp = unpack_viewport_cams(obs, env_id=env_id).get("combined_image")
-                    video_writers_viewport[env_id].write(frame_vp)
-            timer.stop("video_write")
+            # Write per-env video frames (skip frozen envs)
+            if save_videos:
+                timer.start("video_write")
+                for env_id in range(env.num_envs):
+                    if env._frozen_envs[env_id]:
+                        continue
+                    if save_sensor:
+                        frame_obs = unpack_image_obs(obs, scale=0.5, env_id=env_id).get("combined_image")
+                        video_writers_obs[env_id].write(frame_obs)
+                    if save_viewport:
+                        frame_vp = unpack_viewport_cams(obs, env_id=env_id).get("combined_image")
+                        video_writers_viewport[env_id].write(frame_vp)
+                timer.stop("video_write")
 
-        actual_steps += 1
+            actual_steps += 1
 
-        # RobolabEnv freezes terminated envs and exports recordings automatically
-        if env.all_terminated:
-            break
-
-    if save_videos:
+            # RobolabEnv freezes terminated envs and exports recordings automatically
+            if env.all_terminated:
+                break
+    finally:
         for vw in video_writers_obs + video_writers_viewport:
-            vw.release()
-
-    client.reset()
+            try:
+                vw.release()
+            except Exception:
+                logger.exception("Failed to release video writer")
+        try:
+            for policy_client in _unique_clients(clients):
+                policy_client.reset()
+        except Exception:
+            logger.exception("Failed to reset client after episode")
+        for policy_client in created_clients:
+            try:
+                policy_client.close()
+            except Exception:
+                logger.exception("Failed to close per-env policy client")
 
     timing = timer.to_dict(actual_steps)
     return env.get_env_results(), subtask_status, timing

@@ -8,6 +8,29 @@ from isaaclab.utils import configclass
 
 @configclass
 class OverShoulderLeftCameraCfg:
+    """Left and right over-shoulder cameras for DROID-style observations.
+
+    Keep both naming schemes: upstream policy clients use
+    ``over_shoulder_left_camera`` while SmartWorld still consumes
+    ``external_cam`` / ``external_cam_2``.
+    """
+
+    over_shoulder_left_camera = TiledCameraCfg(
+        prim_path="{ENV_REGEX_NS}/over_shoulder_left_camera",
+        height=720,
+        width=1280,
+        data_types=["rgb"],
+        spawn=sim_utils.PinholeCameraCfg(
+            focal_length=2.1,
+            focus_distance=28.0,
+            horizontal_aperture=5.376,
+            vertical_aperture=3.024,
+        ),
+        offset=TiledCameraCfg.OffsetCfg(
+            pos=(0.05, 0.57, 0.66), rot=(-0.393, -0.195, 0.399, 0.805), convention="opengl"
+        ),
+    )
+
     external_cam = TiledCameraCfg(
         prim_path="{ENV_REGEX_NS}/external_cam",
         height=180,
@@ -38,6 +61,64 @@ class OverShoulderLeftCameraCfg:
             pos=(0.05, -0.57, 0.66), rot=(0.805, 0.399, -0.195, -0.393), convention="opengl"
         ),
     )
+
+
+@configclass
+class OverShoulderRightCameraCfg:
+    """Right over-shoulder camera, matching DROID exterior_image_2_left placement.
+
+    Mirror of OverShoulderLeftCameraCfg across the XZ plane (Y → -Y).
+    Mounted to the right of the robot workspace at (0.05, -0.57, 0.66).
+    Look direction: (0.628, +0.490, -0.606) — looking left-and-down toward workspace.
+    Up direction in world: (0.477, +0.372, +0.796) — Z component positive (upright image).
+
+    Derivation: the correct XZ mirror requires det(R) = +1. The rotation matrix columns are
+    the XZ-mirrored left-camera basis vectors with the right-vector sign corrected for
+    right-handedness. Converting that matrix to quaternion gives (0.805, 0.399, -0.195, -0.393).
+    """
+    over_shoulder_right_camera = TiledCameraCfg(
+        prim_path="{ENV_REGEX_NS}/over_shoulder_right_camera",
+        height=720,
+        width=1280,
+        data_types=["rgb"],
+        spawn=sim_utils.PinholeCameraCfg(
+            focal_length=2.1,
+            focus_distance=28.0,
+            horizontal_aperture=5.376,
+            vertical_aperture=3.024,
+        ),
+        offset=TiledCameraCfg.OffsetCfg(
+            pos=(0.05, -0.57, 0.66), rot=(0.805, 0.399, -0.195, -0.393), convention="opengl"
+        ),
+    )
+
+
+@configclass
+class HeadCameraCfg:
+    """Front-facing overhead camera, simulating an operator's head/eye view.
+
+    Positioned 1.5 m in front of and 1.0 m above the robot, looking back toward
+    the workspace.  Look direction: (-0.83, 0, -0.55) — straight-on frontal view.
+    Rotation computed as pure Y-axis rotation mapping camera -Z to look direction:
+    q = (0, sin(28.3°), 0, cos(28.3°)) = (0, 0.474, 0, 0.881).
+    """
+    head_camera = TiledCameraCfg(
+        prim_path="{ENV_REGEX_NS}/head_camera",
+        height=720,
+        width=1280,
+        data_types=["rgb"],
+        spawn=sim_utils.PinholeCameraCfg(
+            focal_length=2.1,
+            focus_distance=28.0,
+            horizontal_aperture=5.376,
+            vertical_aperture=3.024,
+        ),
+        offset=TiledCameraCfg.OffsetCfg(
+            pos=(1.5, 0.0, 1.0), rot=(0.0, 0.474, 0.0, 0.881), convention="opengl"
+        ),
+    )
+
+
 
 ################################################################################
 # Egocentric cameras

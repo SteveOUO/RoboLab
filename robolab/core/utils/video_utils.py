@@ -1,12 +1,20 @@
 import atexit
 import logging
-import numpy as np
 
-import cv2
+import imageio.v2 as imageio
+import numpy as np
 
 logger = logging.getLogger(__name__)
 
+
 class VideoWriter:
+    """Streaming H.264 video writer.
+
+    Pipes RGB frames to an ffmpeg subprocess (via imageio-ffmpeg) which encodes
+    libx264/yuv420p with +faststart so the output plays in Chrome/Safari/Firefox.
+    Memory is bounded by the encoder's lookahead, not by video length.
+    """
+
     def __init__(self, video_path: str, fps: int):
         """Initialize video writer.
 
@@ -16,7 +24,7 @@ class VideoWriter:
         """
         self.video_path = video_path
         self.fps = fps
-        self.video_writer = None
+        self._writer = None
         atexit.register(self.release)
 
     def write(self, frame: np.ndarray):
@@ -24,27 +32,32 @@ class VideoWriter:
             print(f"No frame to write to video writer; nothing written to file '{self.video_path}'")
             return
 
-        if self.video_writer is None:
-            h, w = frame.shape[:2]
+        if self._writer is None:
+            # macro_block_size=2 pads odd-dimensioned frames so libx264+yuv420p (even-only) is safe.
+            # ultrafast/threads=1 keeps per-encoder CPU low so num_envs=10 doesn't oversubscribe.
+            self._writer = imageio.get_writer(
+                self.video_path,
+                fps=self.fps,
+                codec="libx264",
+                pixelformat="yuv420p",
+                macro_block_size=2,
+                ffmpeg_params=[
+                    "-preset", "ultrafast",
+                    "-threads", "1",
+                    "-crf", "23",
+                    "-movflags", "+faststart",
+                ],
+            )
 
-            prev_log_level = cv2.getLogLevel()
-            cv2.setLogLevel(0)  # suppress C++ errors during codec probe
-            fourcc = cv2.VideoWriter_fourcc(*'avc1')
-            self.video_writer = cv2.VideoWriter(self.video_path, fourcc, self.fps, (w, h))
-            cv2.setLogLevel(prev_log_level)
-
-            if not self.video_writer.isOpened():
-                logger.debug("H.264 (avc1) encoder not available, falling back to mp4v")
-                fourcc = cv2.VideoWriter_fourcc(*'mp4v')
-                self.video_writer = cv2.VideoWriter(self.video_path, fourcc, self.fps, (w, h))
-
-        # Write frame (convert RGB to BGR for OpenCV)
-        self.video_writer.write(cv2.cvtColor(frame, cv2.COLOR_RGB2BGR))
+        self._writer.append_data(frame)
 
     def release(self):
-        if self.video_writer is not None:
-            self.video_writer.release()
-            self.video_writer = None
+        if self._writer is not None:
+            try:
+                self._writer.close()
+            except Exception:
+                logger.exception("Failed to close video writer for '%s'", self.video_path)
+            self._writer = None
 
     def __del__(self):
         self.release()

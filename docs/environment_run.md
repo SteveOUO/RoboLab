@@ -175,7 +175,7 @@ You can also pass events directly to `create_env` using the `events` parameter. 
 from robolab.core.events.reset_camera import RandomizeCameraPoseUniform
 
 events = RandomizeCameraPoseUniform.from_params(
-    cameras=["external_cam"],
+    cameras=["over_shoulder_left_camera"],
     pose_range={"x": (-0.05, 0.05), "y": (-0.05, 0.05)},
 )
 env, env_cfg = create_env("BananaInBowlTask", events=events)
@@ -378,6 +378,8 @@ The built-in `examples/policy/run_eval.py` supports the full set of evaluation f
 | `--enable-subtask` | Enable subtask progress checking (records score, reason, subtask log) | `False` |
 | `--record-image-data` | Record image observations to HDF5 | `False` |
 | `--video-mode MODE` | Which videos to save: `all` (sensor + viewport), `viewport` only, `sensor` only, or `none` | `all` |
+| `--randomize-background` | Sample a random non-default background per task at registration time. The chosen texture is recorded in each task's `env_cfg.json`. See [Backgrounds — Per-Run Random Background per Task](background.md#per-run-random-background-per-task). | `False` |
+| `--background-seed N` | Seed for reproducible per-task background sampling. Used with `--randomize-background`. | `None` |
 | `--headless` | Run without live display window. **Recommended for multi-task runs** — see [GPU VRAM leak in non-headless mode](debug.md#gpu-vram-leak-in-non-headless-mode-across-environment-reloads) | `False` |
 | `--enable-verbose` | Verbose output | `False` |
 | `--enable-debug` | Debug output | `False` |

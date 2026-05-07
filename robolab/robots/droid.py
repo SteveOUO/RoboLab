@@ -21,6 +21,26 @@ from isaaclab.utils import configclass, noise
 
 from robolab.constants import ROBOTS_DIR
 
+_WRIST_CAM = TiledCameraCfg(
+    # Deliberately named wrist_cam (not wrist_camera) to avoid collision with the
+    # wrist_camera prim baked into the robot USD, which has different intrinsics.
+    # We spawn our own sensor here with policy-calibrated focal_length 2.8 to match
+    # pi05 / DreamZero training.
+    prim_path="{ENV_REGEX_NS}/robot/Gripper/Robotiq_2F_85/base_link/wrist_cam",
+    height=720,
+    width=1280,
+    data_types=["rgb"],
+    spawn=sim_utils.PinholeCameraCfg(
+        focal_length=2.8,
+        focus_distance=28.0,
+        horizontal_aperture=5.376,
+        vertical_aperture=3.024,
+    ),
+    offset=TiledCameraCfg.OffsetCfg(
+        pos=(0.011, -0.031, -0.074), rot=(-0.420, 0.570, 0.576, -0.409), convention="opengl"
+    ),
+)
+
 
 @configclass
 class DroidCfg:
@@ -90,24 +110,7 @@ class DroidCfg:
         },
     )
 
-    wrist_cam = TiledCameraCfg(
-        prim_path="{ENV_REGEX_NS}/robot/Gripper/Robotiq_2F_85/base_link/wrist_cam",
-        height=180,
-        width=320,
-        data_types=["rgb"],
-        spawn=sim_utils.PinholeCameraCfg(
-            focal_length=2.8,
-            focus_distance=28.0,
-            horizontal_aperture=5.376,
-            vertical_aperture=3.024,
-        ),
-        offset=TiledCameraCfg.OffsetCfg(
-            pos=(0.011, -0.031, -0.074), rot=(-0.420, 0.570, 0.576, -0.409), convention="opengl"
-        ),
-        # offset=TiledCameraCfg.OffsetCfg(
-        #     pos=(-0.074, 0.031, 0.011), rot=(-0.117, -0.68874, 0.705, 0.122), convention="opengl"
-        # ), # New asset, gains not working
-    )
+    wrist_cam = _WRIST_CAM
 
     # NOTE: FrameTransformer disabled - using articulation body state for EE pose instead (faster)
     # frames = FrameTransformerCfg(
@@ -123,6 +126,14 @@ class DroidCfg:
     #         ),
     #     ],
     # )
+
+
+@configclass
+class WristCameraCfg:
+    """Introspection wrapper so the wrist camera can be passed to generate_image_obs_from_cameras.
+    The scene's wrist_cam is still sourced from DroidCfg; this wrapper only exposes the name.
+    """
+    wrist_cam = _WRIST_CAM
 
 ########################################################
 # Contact gripper

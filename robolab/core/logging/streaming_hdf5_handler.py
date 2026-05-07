@@ -3,6 +3,7 @@
 
 """Streaming HDF5 dataset file handler that supports incremental writing with multiple concurrent episodes."""
 
+import atexit
 import json
 import os
 from collections.abc import Iterable
@@ -41,6 +42,25 @@ class StreamingHDF5DatasetFileHandler(DatasetFileHandlerBase):
 
         # Multiple concurrent open episodes, keyed by episode index
         self._open_episodes: dict[int, _OpenEpisode] = {}
+
+        # Best-effort: finalize open episodes and close the file on interpreter
+        # exit (covers KeyboardInterrupt and most unhandled exceptions). __del__
+        # is non-deterministic and can miss this on crash.
+        atexit.register(self._cleanup_at_exit)
+
+    def _cleanup_at_exit(self):
+        """Finalize any still-open episodes and close the file on exit."""
+        if self._hdf5_file_stream is None:
+            return
+        for idx in list(self._open_episodes.keys()):
+            try:
+                self.end_episode(episode_index=idx)
+            except Exception:
+                pass  # interpreter is already exiting; nothing useful to do
+        try:
+            self._hdf5_file_stream.close()
+        except Exception:
+            pass
 
     def open(self, file_path: str, mode: str = "r"):
         """Open an existing dataset file."""
@@ -170,7 +190,7 @@ class StreamingHDF5DatasetFileHandler(DatasetFileHandlerBase):
     # Streaming Operations (multi-episode)
     # ========================================================================
 
-    def begin_episode(self, seed: int = None, episode_index: int = None):
+    def begin_episode(self, seed: int = None, episode_index: int = None) -> int:
         """Begin a new episode for streaming writes.
 
         Multiple episodes can be open concurrently (one per episode_index).
@@ -178,6 +198,9 @@ class StreamingHDF5DatasetFileHandler(DatasetFileHandlerBase):
         Args:
             seed: Optional seed for the episode.
             episode_index: Specific episode index. If None, uses demo_count.
+
+        Returns:
+            The episode index that was opened (caller-supplied or derived from demo_count).
         """
         self._raise_if_not_initialized()
 
@@ -186,7 +209,7 @@ class StreamingHDF5DatasetFileHandler(DatasetFileHandlerBase):
 
         # Already open — just return (idempotent)
         if episode_index in self._open_episodes:
-            return
+            return episode_index
 
         demo_name = f"demo_{episode_index}"
 
@@ -204,6 +227,7 @@ class StreamingHDF5DatasetFileHandler(DatasetFileHandlerBase):
             group.attrs["seed"] = seed
 
         self._open_episodes[episode_index] = ep
+        return episode_index
 
     def append_data(self, episode: EpisodeData, episode_index: int = None):
         """Append episode data to an open episode.
@@ -254,14 +278,19 @@ class StreamingHDF5DatasetFileHandler(DatasetFileHandlerBase):
         Args:
             success: Whether the episode was successful.
             episode_index: Which episode to finalize. If None, finalizes the
-                first (or only) open episode for backward compatibility.
+                single open episode; raises if multiple are open.
         """
         self._raise_if_not_initialized()
 
         if episode_index is None:
-            # Backward compat: end the first open episode
             if not self._open_episodes:
                 return
+            if len(self._open_episodes) > 1:
+                raise RuntimeError(
+                    f"end_episode() called without episode_index but "
+                    f"{len(self._open_episodes)} episodes are open: "
+                    f"{list(self._open_episodes)}. Specify episode_index explicitly."
+                )
             episode_index = next(iter(self._open_episodes))
 
         ep = self._open_episodes.pop(episode_index, None)
@@ -319,8 +348,7 @@ class StreamingHDF5DatasetFileHandler(DatasetFileHandlerBase):
         self._raise_if_not_initialized()
         if episode.is_empty():
             return
-        self.begin_episode(episode.seed)
-        idx = next(iter(self._open_episodes))  # get the just-opened index
+        idx = self.begin_episode(episode.seed)
         self.append_data(episode, episode_index=idx)
         self.end_episode(episode.success, episode_index=idx)
 

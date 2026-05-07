@@ -30,22 +30,27 @@ def auto_register_droid_envs_light_intensity(task_dirs=DEFAULT_TASK_SUBFOLDERS, 
     # Import auto environment factory for automatic task registration
     from robolab.core.environments.factory import auto_discover_and_create_cfgs
     from robolab.core.observations.observation_utils import generate_image_obs_from_cameras, generate_obs_cfg
-    from robolab.registrations.droid_jointpos.observations import ImageObsCfg, ProprioceptionObservationCfg
+    from robolab.registrations.droid_jointpos.camera_presets import WRIST_LEFT
     from robolab.robots.droid import (
         DroidCfg,
         DroidJointPositionActionCfg,
         ProprioceptionObservationCfg,
+        WristCameraCfg,
         contact_gripper,
     )
     from robolab.variations.backgrounds import find_and_generate_background_config
-    from robolab.variations.camera import EgocentricMirroredCameraCfg, OverShoulderLeftCameraCfg
-    from robolab.variations.lighting import ExtremelyDimSphereLightCfg, SphereLightCfg
+    from robolab.variations.camera import EgocentricMirroredCameraCfg
 
     print(f"Registering tasks in {task_dirs}")
 
     subdir_tags = {subdir: subdir for subdir in task_dirs}
 
+    cameras = WRIST_LEFT
+    # WristCameraCfg is robot-mounted; filter from scene mixins to keep spawn order (robot before wrist).
+    scene_cameras = [c for c in cameras if c is not WristCameraCfg]
+
     # Generate Observations
+    ImageObsCfg = generate_image_obs_from_cameras(cameras)
     ViewportCameraCfg = generate_image_obs_from_cameras([EgocentricMirroredCameraCfg])
     ObservationCfg = generate_obs_cfg({
         "image_obs": ImageObsCfg(),
@@ -65,7 +70,7 @@ def auto_register_droid_envs_light_intensity(task_dirs=DEFAULT_TASK_SUBFOLDERS, 
             observations_cfg=ObservationCfg(),
             actions_cfg=DroidJointPositionActionCfg(),
             robot_cfg=DroidCfg,
-            camera_cfg=[OverShoulderLeftCameraCfg, EgocentricMirroredCameraCfg],
+            camera_cfg=[*scene_cameras, EgocentricMirroredCameraCfg],
             background_cfg=find_and_generate_background_config(folder_path=BACKGROUND_ASSET_DIR, filename="home_office.exr", intensity=lighting_intensity),
             contact_gripper=contact_gripper,
             dt=1 / (60 * 2),
@@ -84,22 +89,28 @@ def auto_register_droid_envs_shadows(task_dirs=DEFAULT_TASK_SUBFOLDERS):
     # Import auto environment factory for automatic task registration
     from robolab.core.environments.factory import auto_discover_and_create_cfgs
     from robolab.core.observations.observation_utils import generate_image_obs_from_cameras, generate_obs_cfg
-    from robolab.registrations.droid_jointpos.observations import ImageObsCfg, ProprioceptionObservationCfg
+    from robolab.registrations.droid_jointpos.camera_presets import WRIST_LEFT
     from robolab.robots.droid import (
         DroidCfg,
         DroidJointPositionActionCfg,
         ProprioceptionObservationCfg,
+        WristCameraCfg,
         contact_gripper,
     )
     from robolab.variations.backgrounds import find_and_generate_background_config
-    from robolab.variations.camera import EgocentricMirroredCameraCfg, OverShoulderLeftCameraCfg
-    from robolab.variations.lighting import ExtremelyDimSphereLightCfg, SphereLightCfg, TopDownDirectionalLightCfg
+    from robolab.variations.camera import EgocentricMirroredCameraCfg
+    from robolab.variations.lighting import TopDownDirectionalLightCfg
 
     print(f"Registering tasks in {task_dirs}")
 
     subdir_tags = {subdir: subdir for subdir in task_dirs}
 
+    cameras = WRIST_LEFT
+    # WristCameraCfg is robot-mounted; filter from scene mixins to keep spawn order (robot before wrist).
+    scene_cameras = [c for c in cameras if c is not WristCameraCfg]
+
     # Generate Observations
+    ImageObsCfg = generate_image_obs_from_cameras(cameras)
     ViewportCameraCfg = generate_image_obs_from_cameras([EgocentricMirroredCameraCfg])
     ObservationCfg = generate_obs_cfg({
         "image_obs": ImageObsCfg(),
@@ -120,7 +131,7 @@ def auto_register_droid_envs_shadows(task_dirs=DEFAULT_TASK_SUBFOLDERS):
             observations_cfg=ObservationCfg(),
             actions_cfg=DroidJointPositionActionCfg(),
             robot_cfg=DroidCfg,
-            camera_cfg=[OverShoulderLeftCameraCfg, EgocentricMirroredCameraCfg],
+            camera_cfg=[*scene_cameras, EgocentricMirroredCameraCfg],
             lighting_cfg=TopDownDirectionalLightCfg,
             background_cfg=find_and_generate_background_config(folder_path=BACKGROUND_ASSET_DIR, filename="home_office.exr", intensity=200),
             contact_gripper=contact_gripper,
@@ -140,22 +151,28 @@ def auto_register_droid_envs_colored_lights(task_dirs=DEFAULT_TASK_SUBFOLDERS):
     # Import auto environment factory for automatic task registration
     from robolab.core.environments.factory import auto_discover_and_create_cfgs
     from robolab.core.observations.observation_utils import generate_image_obs_from_cameras, generate_obs_cfg
-    from robolab.registrations.droid_jointpos.observations import ImageObsCfg, ProprioceptionObservationCfg
+    from robolab.registrations.droid_jointpos.camera_presets import WRIST_LEFT
     from robolab.robots.droid import (
         DroidCfg,
         DroidJointPositionActionCfg,
         ProprioceptionObservationCfg,
+        WristCameraCfg,
         contact_gripper,
     )
     from robolab.variations.backgrounds import find_and_generate_background_config
-    from robolab.variations.camera import EgocentricMirroredCameraCfg, OverShoulderLeftCameraCfg
+    from robolab.variations.camera import EgocentricMirroredCameraCfg
     from robolab.variations.lighting import BlueSphereLightCfg, GreenSphereLightCfg, RedSphereLightCfg
 
     print(f"Registering tasks in {task_dirs}")
 
     subdir_tags = {subdir: subdir for subdir in task_dirs}
 
+    cameras = WRIST_LEFT
+    # WristCameraCfg is robot-mounted; filter from scene mixins to keep spawn order (robot before wrist).
+    scene_cameras = [c for c in cameras if c is not WristCameraCfg]
+
     # Generate Observations
+    ImageObsCfg = generate_image_obs_from_cameras(cameras)
     ViewportCameraCfg = generate_image_obs_from_cameras([EgocentricMirroredCameraCfg])
     ObservationCfg = generate_obs_cfg({
         "image_obs": ImageObsCfg(),
@@ -175,7 +192,7 @@ def auto_register_droid_envs_colored_lights(task_dirs=DEFAULT_TASK_SUBFOLDERS):
             observations_cfg=ObservationCfg(),
             actions_cfg=DroidJointPositionActionCfg(),
             robot_cfg=DroidCfg,
-            camera_cfg=[OverShoulderLeftCameraCfg, EgocentricMirroredCameraCfg],
+            camera_cfg=[*scene_cameras, EgocentricMirroredCameraCfg],
             lighting_cfg=RedSphereLightCfg,
             background_cfg=find_and_generate_background_config(folder_path=BACKGROUND_ASSET_DIR, filename="home_office.exr", intensity=100),
             contact_gripper=contact_gripper,
@@ -196,7 +213,7 @@ def auto_register_droid_envs_colored_lights(task_dirs=DEFAULT_TASK_SUBFOLDERS):
             observations_cfg=ObservationCfg(),
             actions_cfg=DroidJointPositionActionCfg(),
             robot_cfg=DroidCfg,
-            camera_cfg=[OverShoulderLeftCameraCfg, EgocentricMirroredCameraCfg],
+            camera_cfg=[*scene_cameras, EgocentricMirroredCameraCfg],
             lighting_cfg=BlueSphereLightCfg,
             background_cfg=find_and_generate_background_config(folder_path=BACKGROUND_ASSET_DIR, filename="home_office.exr", intensity=100),
             contact_gripper=contact_gripper,
@@ -217,7 +234,7 @@ def auto_register_droid_envs_colored_lights(task_dirs=DEFAULT_TASK_SUBFOLDERS):
             observations_cfg=ObservationCfg(),
             actions_cfg=DroidJointPositionActionCfg(),
             robot_cfg=DroidCfg,
-            camera_cfg=[OverShoulderLeftCameraCfg, EgocentricMirroredCameraCfg],
+            camera_cfg=[*scene_cameras, EgocentricMirroredCameraCfg],
             lighting_cfg=GreenSphereLightCfg,
             background_cfg=find_and_generate_background_config(folder_path=BACKGROUND_ASSET_DIR, filename="home_office.exr", intensity=100),
             contact_gripper=contact_gripper,

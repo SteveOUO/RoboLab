@@ -4,6 +4,7 @@
 import glob
 import json
 import os
+import sys
 from pathlib import Path
 from typing import List, Union
 
@@ -473,13 +474,16 @@ def expand_folder_patterns(
 ) -> tuple[list[str], bool]:
     """Expand glob patterns to matching directory paths.
 
-    Each pattern can be a literal path or a glob (e.g., 'pi0_*'). Non-absolute
-    patterns are resolved relative to *base_dir* when provided.
+    Each pattern can be a literal path or a glob (e.g., 'pi0_*'). Resolution order
+    for a relative pattern:
+      1. As-given (CWD-relative) — standard CLI behavior.
+      2. base_dir-prepended fallback (only if (1) had no matches and base_dir is set) —
+         preserves shorthand like `pi0_*` resolving to `<base_dir>/pi0_*`.
 
     Args:
         patterns: Folder names or glob patterns.
-        base_dir: Optional base directory prepended to non-absolute patterns
-            before globbing. When None, patterns are globbed as-is.
+        base_dir: Optional fallback base directory used only when CWD-relative
+            resolution finds no matches.
 
     Returns:
         (deduplicated list of directory paths, whether any pattern was expanded)
@@ -488,15 +492,23 @@ def expand_folder_patterns(
     pattern_expanded = False
 
     for pattern in patterns:
+        candidates: list[str] = []
         if os.path.isabs(pattern):
-            full_pattern = pattern
-        elif base_dir is not None:
-            full_pattern = os.path.join(base_dir, pattern)
+            candidates.append(pattern)
         else:
-            full_pattern = pattern
+            candidates.append(pattern)
+            if base_dir is not None:
+                candidates.append(os.path.join(base_dir, pattern))
 
-        matches = sorted(glob.glob(full_pattern))
-        matches = [m for m in matches if os.path.isdir(m)]
+        matches: list[str] = []
+        full_pattern = candidates[0]
+        for cand in candidates:
+            cand_matches = sorted(glob.glob(cand))
+            cand_matches = [m for m in cand_matches if os.path.isdir(m)]
+            if cand_matches:
+                full_pattern = cand
+                matches = cand_matches
+                break
 
         if matches:
             if len(matches) > 1 or matches[0] != full_pattern:
@@ -534,6 +546,14 @@ def confirm_folders(
         prompt = "\nInclude all? [Y/n/s] (s=select individually): "
     else:
         prompt = "Proceed with these folders? [y/N/s] (s=select individually): "
+
+    if not sys.stdin.isatty():
+        if default_yes:
+            print(f"{prompt}[non-interactive stdin: auto-including all {len(folders)} folder(s)]")
+            return folders
+        else:
+            print(f"{prompt}[non-interactive stdin: aborting]")
+            return []
 
     while True:
         response = input(prompt).strip().lower()

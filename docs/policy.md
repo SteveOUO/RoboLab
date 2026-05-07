@@ -42,12 +42,12 @@ class MyPolicyClient(InferenceClient):
 
     def _extract_observation(self, raw_obs, *, env_id=0) -> dict:
         # For the default DROID registration, raw_obs contains:
-        #   raw_obs["image_obs"]["external_cam"]    - (N, H, W, 3) torch tensor, uint8
+        #   raw_obs["image_obs"]["over_shoulder_left_camera"]    - (N, H, W, 3) torch tensor, uint8
         #   raw_obs["image_obs"]["wrist_cam"]       - (N, H, W, 3) torch tensor, uint8
         #   raw_obs["proprio_obs"]["arm_joint_pos"] - (N, 7) torch tensor, float32
         #   raw_obs["proprio_obs"]["gripper_pos"]   - (N, 1) torch tensor, float32
         return {
-            "image":    raw_obs["image_obs"]["external_cam"][env_id].cpu().numpy(),
+            "image":    raw_obs["image_obs"]["over_shoulder_left_camera"][env_id].cpu().numpy(),
             "joint_pos": raw_obs["proprio_obs"]["arm_joint_pos"][env_id].cpu().numpy(),
         }
 

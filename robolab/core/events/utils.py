@@ -23,7 +23,7 @@ def create_events_cfg_from_dict(events_dict: dict) -> object:
             "reset_camera": EventTerm(
                 func=reset_camera_pose_uniform,
                 mode="reset",
-                params={"camera_names": ["external_cam"], "pose_range": {"x": (-0.05, 0.05)}}
+                params={"camera_names": ["over_shoulder_left_camera"], "pose_range": {"x": (-0.05, 0.05)}}
             )
         })
     """
@@ -63,7 +63,7 @@ def merge_events_cfg(existing_events_cfg: object, new_events: dict | object) -> 
             "randomize_camera": EventTerm(
                 func=reset_camera_pose_uniform,
                 mode="reset",
-                params={"camera_names": ["external_cam"], "pose_range": {"x": (-0.05, 0.05)}}
+                params={"camera_names": ["over_shoulder_left_camera"], "pose_range": {"x": (-0.05, 0.05)}}
             )
         })
         # merged now has both 'reset' and 'randomize_camera' events

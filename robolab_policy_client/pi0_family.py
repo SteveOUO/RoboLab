@@ -78,7 +78,7 @@ class Pi0DroidJointposClient(InferenceClient):
     # ---- required hooks -----------------------------------------------
 
     def _extract_observation(self, raw_obs: dict, *, env_id: int = 0) -> dict:
-        right_image = raw_obs["image_obs"]["external_cam"][env_id].clone().detach().cpu().numpy()
+        right_image = raw_obs["image_obs"]["over_shoulder_left_camera"][env_id].clone().detach().cpu().numpy()
         wrist_image = raw_obs["image_obs"]["wrist_cam"][env_id].clone().detach().cpu().numpy()
 
         robot_state = raw_obs["proprio_obs"]
@@ -132,7 +132,7 @@ if __name__ == "__main__":
     client = Pi0DroidJointposClient()
     fake_obs = {
         "image_obs": {
-            "external_cam": [torch.zeros((224, 224, 3), dtype=torch.uint8)],
+            "over_shoulder_left_camera": [torch.zeros((224, 224, 3), dtype=torch.uint8)],
             "wrist_cam": [torch.zeros((224, 224, 3), dtype=torch.uint8)],
         },
         "proprio_obs": {

@@ -10,10 +10,14 @@ with custom recorder manager support and eval-specific behavior:
 - Per-env recording export on termination
 """
 
+import logging
+
 import torch
 from isaaclab.envs import ManagerBasedRLEnv
 
 from robolab.core.logging.recorder_manager import RobolabRecorderManager
+
+logger = logging.getLogger(__name__)
 
 
 class RobolabEnv(ManagerBasedRLEnv):
@@ -35,7 +39,14 @@ class RobolabEnv(ManagerBasedRLEnv):
         self._has_stepped = False                     # tracks whether step() has been called
 
     def load_managers(self):
-        """Load managers with custom recorder manager."""
+        """Load managers; replace upstream RecorderManager with the streaming-
+        capable RobolabRecorderManager.
+
+        super().load_managers() builds an upstream RecorderManager which we
+        immediately overwrite below. The wasted construction is benign
+        (RecorderManager.__init__ does no IO until set_hdf5_file() is called)
+        and the explicit replacement avoids needing a global monkey-patch.
+        """
         super().load_managers()
         self.recorder_manager = RobolabRecorderManager(self.cfg.recorders, self)
 
@@ -81,7 +92,10 @@ class RobolabEnv(ManagerBasedRLEnv):
                     try:
                         self.recorder_manager.export_episodes(env_ids=[eid])
                     except Exception:
-                        pass
+                        logger.exception(
+                            "Failed to export recording for env_id=%d at step=%d; episode data may be incomplete.",
+                            eid, ep_len,
+                        )
 
         # Only reset non-frozen envs (typically none in eval)
         mask = ~self._frozen_envs[env_ids]

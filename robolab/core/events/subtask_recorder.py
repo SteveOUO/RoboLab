@@ -11,6 +11,7 @@ from isaaclab.utils import configclass
 
 import robolab.constants
 from robolab.core.task.event_tracker import EventTracker
+from robolab.core.task.status import get_status_name
 from robolab.core.task.subtask_state_machine import SubtaskStateMachine
 
 
@@ -54,6 +55,12 @@ class SubtaskCompletionRecorderTerm(RecorderTerm):
         self._final_infos: list[dict | None] = [None] * self._num_envs
         self._last_error_infos: list[tuple[str, int] | None] = [None] * self._num_envs
         self._last_error_scores: list[float] = [0.0] * self._num_envs
+
+        # v2 event log: sparse, edge-triggered. One list per env. Each entry:
+        # {"step": int, "code": int, "name": str, "info": str, "score": float}.
+        # Survives clear() (auto-flush) and is reset only on reset().
+        self._events: list[list[dict]] = [[] for _ in range(self._num_envs)]
+        self._prev_sm_state: list[tuple[int, str] | None] = [None] * self._num_envs
 
     @property
     def subtask_state_machine(self) -> SubtaskStateMachine | None:
@@ -136,15 +143,42 @@ class SubtaskCompletionRecorderTerm(RecorderTerm):
             self.infos[eid]["total"] = subtask_state["total"]
             self.infos[eid]["score"] = subtask_state["score"]
 
-            if all_status_codes:
-                self.infos[eid]["all_status_codes"] = [
-                    (cond_info, int(cond_status)) for cond_info, cond_status in all_status_codes
-                ]
-            else:
-                self.infos[eid]["all_status_codes"] = []
+            # Emit v2 events: tracker firings + SM transitions, all tagged with
+            # this step's post-update score.
+            try:
+                step_idx = int(self._env.episode_length_buf[eid].item())
+            except Exception:
+                step_idx = -1
+            current_score = float(subtask_state["score"])
+
+            for tracker_info, tracker_code, env_mask in all_events:
+                if env_mask[eid]:
+                    code_int = int(tracker_code)
+                    self._events[eid].append({
+                        "step": step_idx,
+                        "code": code_int,
+                        "name": get_status_name(code_int),
+                        "info": tracker_info,
+                        "score": current_score,
+                    })
+
+            cur_sm_state = (int(status_code), info or "")
+            if (
+                cur_sm_state != self._prev_sm_state[eid]
+                and info
+                and int(status_code) != 0
+            ):
+                code_int = int(status_code)
+                self._events[eid].append({
+                    "step": step_idx,
+                    "code": code_int,
+                    "name": get_status_name(code_int),
+                    "info": info,
+                    "score": current_score,
+                })
+            self._prev_sm_state[eid] = cur_sm_state
 
             # Capture error info before auto-reset can cause regression
-            current_score = subtask_state["score"]
             if not sm.is_complete():
                 if self._last_error_infos[eid] is None or current_score >= self._last_error_scores[eid]:
                     error_info, error_code = sm.get_final_error_code()
@@ -187,6 +221,8 @@ class SubtaskCompletionRecorderTerm(RecorderTerm):
 
         for eid in env_ids:
             self.subtask_state_machines[eid].reset()
+            self._events[eid] = []
+            self._prev_sm_state[eid] = None
 
         if self._event_tracker is not None:
             self._event_tracker.reset_envs(list(env_ids))
@@ -250,6 +286,17 @@ class SubtaskCompletionRecorderTerm(RecorderTerm):
         if env_id is None:
             return self._final_infos
         return self._final_infos[env_id]
+
+    def get_events(self, env_id: int | None = None) -> list[dict] | list[list[dict]]:
+        """Get the v2 event log accumulated this episode.
+
+        Args:
+            env_id: If None, return list[per-env list[event dict]].
+                   If int, return that env's list[event dict].
+        """
+        if env_id is None:
+            return [copy.deepcopy(ev) for ev in self._events]
+        return copy.deepcopy(self._events[env_id])
 
     def clear(self):
         """Clear recording buffers.

@@ -20,7 +20,7 @@ class Terminations:
         params={
             "object": [
                 "rubiks_cube", "rubiks_cube_1", "rubiks_cube_2",
-                "lizard_figurine", "birdhouse",
+                "lizard_figurine",
                 "yellow_block", "red_block", "green_block", "blue_block",
                 "lizard_figurine_01"
             ],
@@ -42,9 +42,9 @@ class CleanUpToysTask(Task):
     scene = import_scene("toys_cleanup.usda", contact_object_list)
     terminations = Terminations
     instruction = {
-        "default": "Clean up all the toys",
-        "vague": "Clean up everything except birdhouse",
-        "specific": "Pick up every toy object (rubiks cube, lizard figurines, colored blocks) from the table and place them all into the bin",
+        "default": "Clean up all the smaller toys and leave the birdhouse on the table",
+        "vague": "Clean up everything except the birdhouse",
+        "specific": "Pick up every toy object (rubiks cube, lizard figurines, colored blocks) from the table and place them all into the bin. Please ignore the birdhouse and don't touch it.",
     }
     episode_length_s: int = 300
     attributes = ['sorting', 'semantics']

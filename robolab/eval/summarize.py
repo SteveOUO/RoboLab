@@ -14,9 +14,12 @@ import os
 import re
 from collections import Counter
 
+import h5py
+
 from robolab.core.logging.results import (
     dump_results_to_file,
     extract_subtask_status_changes,
+    get_all_env_events,
     get_final_subtask_info,
     update_experiment_results,
 )
@@ -25,47 +28,43 @@ from robolab.core.task.status import EVENT_STATUS_CODES, StatusCode, get_status_
 from robolab.core.utils.file_utils import load_file
 
 
-def split_msgs_per_env(
-    msgs: list[list[dict] | None], num_envs: int
-) -> dict[int, list[dict | None]]:
-    """Transpose step-major msgs (``list[list[dict] | None]``) into per-env
-    log streams (``{env_id: list[dict | None]}``)."""
-    per_env: dict[int, list[dict | None]] = {eid: [] for eid in range(num_envs)}
-    for step_infos in msgs:
-        if step_infos is None:
-            for eid in range(num_envs):
-                per_env[eid].append(None)
-        else:
-            for eid in range(num_envs):
-                per_env[eid].append(step_infos[eid] if eid < len(step_infos) else None)
-    return per_env
+def _read_final_score_from_hdf5(hdf5_path: str, env_id: int) -> float | None:
+    """Return the canonical final-step SM score for an env from
+    ``demo_<env_id>/subtask/score``. Returns ``None`` if the file or dataset
+    is missing or empty.
 
-
-def extract_events_from_log(log_file: str) -> dict:
-    """Read a per-env JSON log and tally occurrences of each status code in
-    :data:`EVENT_STATUS_CODES`. For ``WRONG_OBJECT_GRABBED_FAILURE``, also
-    collects the name of each wrong object.
+    This is the source of truth for ``episode_results.score`` and matches
+    the per-event ``score`` field in the v2 events log (both denormalize
+    from ``subtask/score[step]``).
     """
-    if not os.path.exists(log_file):
-        return {}
+    if not os.path.exists(hdf5_path):
+        return None
+    try:
+        with h5py.File(hdf5_path, "r") as f:
+            ds = f.get(f"data/demo_{env_id}/subtask/score")
+            if ds is None or ds.shape[0] == 0:
+                return None
+            return float(ds[-1])
+    except Exception:
+        return None
 
-    log_data = load_file(log_file)
-    if log_data is None:
-        return {}
 
-    status_changes = extract_subtask_status_changes(log_data)
-    if not status_changes:
-        return {}
+def _tally_events(events: list[dict]) -> dict:
+    """Tally a v2 events list (each entry has ``code``, ``info``, ...) and
+    return ``{event_name: count, ..., wrong_objects_grabbed: [...]}``.
 
+    Pure function: works on in-memory event dicts, used by both ``summarize_run``
+    (post-episode) and ``extract_events_from_log`` (file-based, v1 or v2).
+    """
     event_counts: Counter = Counter()
     wrong_objects_grabbed: list[str] = []
 
-    for change in status_changes:
-        status_code = change.get("status", 0)
+    for change in events:
+        status_code = change.get("code", change.get("status", 0))
         if status_code not in EVENT_STATUS_CODES:
             continue
 
-        event_name = get_status_name(status_code)
+        event_name = change.get("name") or get_status_name(status_code)
         if event_name.endswith("_FAILURE"):
             event_name = event_name[:-8]
 
@@ -77,11 +76,41 @@ def extract_events_from_log(log_file: str) -> dict:
             if match:
                 wrong_objects_grabbed.append(match.group(1))
 
-    events: dict = dict(event_counts)
+    out: dict = dict(event_counts)
     if wrong_objects_grabbed:
-        events["wrong_objects_grabbed"] = wrong_objects_grabbed
+        out["wrong_objects_grabbed"] = wrong_objects_grabbed
+    return out
 
-    return events
+
+def extract_events_from_log(log_file: str) -> dict:
+    """Read a per-env JSON log (v1 or v2) and tally occurrences of each status
+    code in :data:`EVENT_STATUS_CODES`. For ``WRONG_OBJECT_GRABBED_FAILURE``,
+    also collects the name of each wrong object.
+
+    v1 logs are dense per-step lists; v2 logs are sparse event arrays under a
+    ``schema_version: 2`` envelope.
+    """
+    if not os.path.exists(log_file):
+        return {}
+
+    log_data = load_file(log_file)
+    if log_data is None:
+        return {}
+
+    if isinstance(log_data, dict) and log_data.get("schema_version") == 2:
+        return _tally_events(log_data.get("events", []))
+
+    if isinstance(log_data, list):
+        # v1: dense per-step list, expand all_status_codes via legacy helper
+        status_changes = extract_subtask_status_changes(log_data)
+        # Map v1 'status' field to v2 'code' for the shared tally helper
+        v2_shaped = [
+            {"code": c.get("status", 0), "info": c.get("info", "")}
+            for c in status_changes
+        ]
+        return _tally_events(v2_shaped)
+
+    return {}
 
 
 def build_run_summary(
@@ -97,13 +126,14 @@ def build_run_summary(
     dt: float,
     traj_metrics: dict | None,
     events: dict,
-    env_msgs: list[dict | None],
+    events_list: list[dict],
     final_info: dict | None,
     enable_subtask_progress: bool,
     instruction_type: str | None = None,
     timing: dict | None = None,
     task_name: str | None = None,
     extra_fields: dict | None = None,
+    final_score: float | None = None,
 ) -> dict:
     """Construct one per-env ``run_summary`` dict. Pure: no IO.
 
@@ -137,12 +167,30 @@ def build_run_summary(
         summary["timing"] = timing
 
     if enable_subtask_progress:
-        last_msg = next((m for m in reversed(env_msgs) if m is not None), None)
-        if last_msg is not None:
-            summary["score"] = last_msg.get("score", None)
-            summary["reason"] = last_msg.get("info", None)
+        # Score: HDF5 subtask/score[final_step] is canonical (matches
+        # per-event score in the v2 events log).
+        if final_score is not None:
+            summary["score"] = final_score
+        elif events_list:
+            summary["score"] = events_list[-1].get("score")
         else:
             summary["score"] = None
+
+        # Reason: derived from the v2 events stream. For success, walk back
+        # past post-success drift (failure-range codes that fire after the
+        # success transition) to the last success-range event.
+        if events_list:
+            last_event = events_list[-1]
+            if env_result["success"]:
+                success_event = next(
+                    (e for e in reversed(events_list)
+                     if e.get("info") and e.get("code", 0) < 200),
+                    last_event,
+                )
+                summary["reason"] = success_event.get("info")
+            else:
+                summary["reason"] = last_event.get("info")
+        else:
             summary["reason"] = None
 
         # For failed episodes, prefer the per-env final_info reason if available.
@@ -188,25 +236,49 @@ def summarize_run(
 
     Returns the updated ``episode_results`` dict.
     """
-    per_env_msgs = split_msgs_per_env(msgs, num_envs)
+    # ``msgs`` is retained in the signature for backward compatibility with
+    # existing eval callers but is no longer consumed: events come from the
+    # recorder and score/reason derive from HDF5 + the v2 events stream.
     final_infos = get_final_subtask_info(env, env_id=None)
-
-    # Write per-env logs + tally events.
-    per_env_events: dict[int, dict] = {}
-    for eid in range(num_envs):
-        log_file = os.path.join(scene_output_dir, f"log_{run_idx}_env{eid}.json")
-        dump_results_to_file(log_file, per_env_msgs[eid], append=False)
-        per_env_events[eid] = extract_events_from_log(log_file)
 
     dt = env_cfg.sim.dt * env_cfg.decimation
     hdf5_path = os.path.join(scene_output_dir, f"run_{run_idx}.hdf5")
+
+    # v2 event log: pull per-env events from the recorder and persist as
+    # {schema_version: 2, ..., events: [...]}. Tally counts in memory; no
+    # disk round-trip needed.
+    per_env_events_list = get_all_env_events(env) or [[] for _ in range(num_envs)]
+    env_results_by_id = {r["env_id"]: r for r in env_results}
+    resolved_task_name = task_name if task_name is not None else env_cfg._task_name
+
+    per_env_events: dict[int, dict] = {}
+    for eid in range(num_envs):
+        events = per_env_events_list[eid] if eid < len(per_env_events_list) else []
+        r = env_results_by_id.get(eid, {})
+        log_obj = {
+            "schema_version": 2,
+            "dt": dt,
+            "task": resolved_task_name,
+            "env_id": eid,
+            "run": run_idx,
+            "success": r.get("success"),
+            "final_step": r.get("step"),
+            "events": events,
+        }
+        log_file = os.path.join(scene_output_dir, f"log_{run_idx}_env{eid}.json")
+        dump_results_to_file(log_file, log_obj, append=False)
+        per_env_events[eid] = _tally_events(events)
 
     for r in env_results:
         env_id = r["env_id"]
         traj_data = load_demo_data(hdf5_path, f"demo_{env_id}")
         traj_metrics = compute_episode_metrics(traj_data, dt=dt) if traj_data else None
         final_info = final_infos[env_id] if final_infos else None
+        final_score = _read_final_score_from_hdf5(hdf5_path, env_id)
 
+        events_list_for_env = (
+            per_env_events_list[env_id] if env_id < len(per_env_events_list) else []
+        )
         run_summary = build_run_summary(
             env_result=r,
             env_id=env_id,
@@ -219,13 +291,14 @@ def summarize_run(
             dt=dt,
             traj_metrics=traj_metrics,
             events=per_env_events.get(env_id, {}),
-            env_msgs=per_env_msgs.get(env_id, []),
+            events_list=events_list_for_env,
             final_info=final_info,
             enable_subtask_progress=enable_subtask_progress,
             instruction_type=instruction_type,
             timing=timing,
             task_name=task_name,
             extra_fields=extra_fields,
+            final_score=final_score,
         )
 
         episode_results = update_experiment_results(

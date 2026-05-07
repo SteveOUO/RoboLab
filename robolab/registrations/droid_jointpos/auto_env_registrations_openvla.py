@@ -29,7 +29,6 @@ def auto_register_droid_envs(task_dirs=DEFAULT_TASK_SUBFOLDERS, lighting_intensi
     # Import auto environment factory for automatic task registration
     from robolab.core.environments.factory import auto_discover_and_create_cfgs
     from robolab.core.observations.observation_utils import generate_image_obs_from_cameras, generate_obs_cfg
-    from robolab.registrations.droid_jointpos.observations import ImageObsCfg, ProprioceptionObservationCfg
     from robolab.robots.droid import (
         DroidCfg,
         DroidJointPositionActionCfg,
@@ -44,7 +43,10 @@ def auto_register_droid_envs(task_dirs=DEFAULT_TASK_SUBFOLDERS, lighting_intensi
 
     subdir_tags = {subdir: subdir for subdir in task_dirs}
 
+    cameras = [OverShoulderLeftCameraCfg, EgocentricMirroredCameraCfg]
+
     # Generate Observations
+    ImageObsCfg = generate_image_obs_from_cameras(cameras)
     ViewportCameraCfg = generate_image_obs_from_cameras([EgocentricMirroredCameraCfg])
     ObservationCfg = generate_obs_cfg({
         "image_obs": ImageObsCfg(),
@@ -64,7 +66,7 @@ def auto_register_droid_envs(task_dirs=DEFAULT_TASK_SUBFOLDERS, lighting_intensi
             observations_cfg=ObservationCfg(),
             actions_cfg=DroidJointPositionActionCfg(),
             robot_cfg=DroidCfg,
-            camera_cfg=[OverShoulderLeftCameraCfg, EgocentricMirroredCameraCfg],
+            camera_cfg=cameras,
             lighting_cfg=SphereLightCfg,
             background_cfg=HomeOfficeBackgroundCfg,
             contact_gripper=contact_gripper,

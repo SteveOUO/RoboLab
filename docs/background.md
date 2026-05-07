@@ -2,6 +2,18 @@
 
 RoboLab uses HDR/EXR environment maps rendered as dome lights to provide realistic scene backgrounds. A background config is a `@configclass` with a `dome_light` field and is passed as `background_cfg` during [environment registration](environment_registration.md). These configs can live in your own repository.
 
+## Choosing a Background Strategy
+
+Three distinct ways to use backgrounds in evaluation. Pick based on the question you're answering:
+
+| Strategy | Envs registered | Use when you want to... | Registration | Eval script |
+|----------|-----------------|-------------------------|--------------|-------------|
+| **Single fixed background** *(default)* | `tasks × 1`, all tasks share one bg | Run the benchmark normally; backgrounds aren't part of the experiment | `auto_register_droid_envs()` | `run_eval.py` |
+| **Per-task random background** *(new)* | `tasks × 1`, each task gets a different random bg | Add visual diversity across the benchmark in one pass without inflating env count | `auto_register_droid_envs(randomize_background=True)` | `run_eval.py --randomize-background` |
+| **Task × background matrix** | `tasks × backgrounds`, every combo registered | Measure robustness of the *same* task across *many* backgrounds | `auto_register_droid_envs_bg_variations()` | `run_eval_background_variation.py` |
+
+Detail sections below: [Single fixed background](#using-a-background-config) · [Per-task random background](#per-run-random-background-per-task) · [Task × background matrix](#background-variation-for-robustness-testing).
+
 ## Built-in Backgrounds
 
 RoboLab ships HDR/EXR background assets in `assets/backgrounds/` organized by category:
@@ -104,9 +116,34 @@ bg_config = generate_background_config(
 
 ## Background Variation for Robustness Testing
 
-To evaluate policy robustness under different visual environments, register multiple environment variants with different `background_cfg` values. See `robolab/registrations/droid_jointpos/auto_env_registrations_bg_variations.py` for a complete example.
+> **Task × background matrix:** registers `N tasks × M backgrounds` envs (one per combination), so each task is evaluated separately under each background. Use this to measure robustness of the *same* task across *many* backgrounds.
 
-The built-in evaluation script `examples/policy/run_eval_background_variation.py` runs benchmarks across background conditions automatically.
+Registered via `auto_register_droid_envs_bg_variations()` in `robolab/registrations/droid_jointpos/auto_env_registrations_bg_variations.py`. The built-in evaluation script `examples/policy/run_eval_background_variation.py` loops over the registered matrix and reports per-(task, bg) results.
+
+> **Not what you want?** If you want each task in the benchmark to get *one* random background (so the run as a whole spans many backgrounds without inflating env count), use [Per-Run Random Background per Task](#per-run-random-background-per-task) instead.
+
+## Per-Run Random Background per Task
+
+`auto_register_droid_envs` accepts `randomize_background=True` to sample one random background per task at registration time (excluding the default `home_office.exr`). Each registered env gets one fixed background for the entire run; the chosen texture lands in the per-task `env_cfg.json` under `scene.background.dome_light.spawn.texture_file`.
+
+```python
+from robolab.registrations.droid_jointpos.auto_env_registrations import auto_register_droid_envs
+
+auto_register_droid_envs(
+    randomize_background=True,
+    background_seed=42,        # optional, for reproducibility
+)
+```
+
+Or via `run_eval.py`:
+
+```bash
+python examples/policy/run_eval.py --headless --randomize-background --background-seed 42
+```
+
+Mechanism: a per-task factory closure is passed as `background_cfg`, and the factory (`robolab.core.environments.factory._resolve_per_task_kwargs`) invokes it once per task during registration. Without `--background-seed`, sampling is non-deterministic across invocations.
+
+> **Not what you want?** If you want the *same* task evaluated across *several* backgrounds in one run, use [Task × background matrix](#background-variation-for-robustness-testing) instead.
 
 ## Using Your Own HDR/EXR Files
 

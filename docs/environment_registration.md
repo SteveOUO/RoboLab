@@ -16,15 +16,21 @@ You need a custom registration if:
 
 Define which sensor data the simulator should provide to your policy. This uses IsaacLab's observation manager.
 
-**For DROID users:** RoboLab already ships image and proprioception observation configs. If these work for your policy, you can skip this step and import them directly in Step 2:
+**For DROID users:** RoboLab ships a proprioception observation config and a helper that generates an image observation config from any list of camera configs. If these work for your policy, you can skip this step and import/build them directly in Step 2:
 
 ```python
-# Image observations (external camera + wrist camera)
-from robolab.registrations.droid_jointpos.observations import ImageObsCfg
+# Image observations — generated from a list of camera configs, so the obs terms
+# automatically match whatever cameras you attach to the scene.
+from robolab.core.observations.observation_utils import generate_image_obs_from_cameras
+from robolab.registrations.droid_jointpos.camera_presets import WRIST_LEFT
+
+ImageObsCfg = generate_image_obs_from_cameras(WRIST_LEFT)
 
 # Proprioception (joint positions, gripper state, EEF pose, etc.)
 from robolab.robots.droid import ProprioceptionObservationCfg
 ```
+
+Presets live in `robolab/registrations/droid_jointpos/camera_presets.py`: `WRIST`, `WRIST_LEFT`, `WRIST_RIGHT`, `WRIST_LEFT_RIGHT`, `WRIST_LEFT_RIGHT_HEAD`, `LEFT_RIGHT`. Pick one or pass your own list. Viewport-only cameras (used for recorded video, not policy input) are attached separately inside the registration function and do not belong in these presets.
 
 If you need different observations (e.g., different cameras, depth data, or custom proprioception), define your own:
 
@@ -41,9 +47,9 @@ from isaaclab.utils import configclass
 @configclass
 class ImageObsCfg(ObsGroup):
     """Camera observations for your policy."""
-    external_cam = ObsTerm(
+    over_shoulder_left_camera = ObsTerm(
         func=mdp.observations.image,
-        params={"sensor_cfg": SceneEntityCfg("external_cam"), "data_type": "rgb", "normalize": False},
+        params={"sensor_cfg": SceneEntityCfg("over_shoulder_left_camera"), "data_type": "rgb", "normalize": False},
     )
     wrist_cam = ObsTerm(
         func=mdp.observations.image,
@@ -55,7 +61,9 @@ class ImageObsCfg(ObsGroup):
         self.concatenate_terms = False
 ```
 
-The camera names (`external_cam`, `wrist_cam`) are mapped from the camera configurations you provide in Step 2. You can mix and match — use the built-in `ProprioceptionObservationCfg` from `robolab.robots.droid` with your own custom `ImageObsCfg`, or vice versa.
+The camera names (`over_shoulder_left_camera`, `wrist_cam`) are mapped from the camera configurations you provide in Step 2. You can mix and match — use the built-in `ProprioceptionObservationCfg` from `robolab.robots.droid` with your own custom `ImageObsCfg`, or vice versa.
+
+> **When to hand-roll an `ImageObsCfg` instead of generating it:** `generate_image_obs_from_cameras(...)` produces a uniform observation term per camera (RGB, no noise, no normalization). If you want per-camera customization — different data types (depth), noise corruption, normalization flags, or reading one `TiledCameraCfg` prim via multiple keys — define the class by hand as shown above.
 
 ## Step 2: Write a Registration Function
 
@@ -67,9 +75,10 @@ Create a function that combines the benchmark tasks with your robot, observation
 from robolab.constants import DEFAULT_TASK_SUBFOLDERS, TASK_DIR
 
 
-def register_envs(task_dirs=DEFAULT_TASK_SUBFOLDERS, task=None):
+def register_envs(task_dirs=DEFAULT_TASK_SUBFOLDERS, task=None, cameras=None):
     from robolab.core.environments.factory import auto_discover_and_create_cfgs
     from robolab.core.observations.observation_utils import generate_image_obs_from_cameras, generate_obs_cfg
+    from robolab.registrations.droid_jointpos.camera_presets import WRIST_LEFT
     from robolab.robots.droid import (
         DroidCfg,
         DroidJointPositionActionCfg,
@@ -77,12 +86,15 @@ def register_envs(task_dirs=DEFAULT_TASK_SUBFOLDERS, task=None):
         contact_gripper,
     )
     from robolab.variations.backgrounds import HomeOfficeBackgroundCfg
-    from robolab.variations.camera import EgocentricMirroredCameraCfg, OverShoulderLeftCameraCfg
+    from robolab.variations.camera import EgocentricMirroredCameraCfg
     from robolab.variations.lighting import SphereLightCfg
 
-    # Use robolab's built-in DROID observations, or import your own from Step 1
-    from robolab.registrations.droid_jointpos.observations import ImageObsCfg
-    # from my_policy.observations import ImageObsCfg  # ← use this if you defined custom observations
+    if cameras is None:
+        cameras = WRIST_LEFT
+
+    # The same list feeds both the scene and the image observation group.
+    ImageObsCfg = generate_image_obs_from_cameras(cameras)
+    # Or roll your own: `from my_policy.observations import ImageObsCfg` (see Step 1).
 
     # Build the full observation config
     ViewportCameraCfg = generate_image_obs_from_cameras([EgocentricMirroredCameraCfg])
@@ -102,7 +114,8 @@ def register_envs(task_dirs=DEFAULT_TASK_SUBFOLDERS, task=None):
         observations_cfg=ObservationCfg(),
         actions_cfg=DroidJointPositionActionCfg(),
         robot_cfg=DroidCfg,
-        camera_cfg=[OverShoulderLeftCameraCfg, EgocentricMirroredCameraCfg],
+        # Policy-observed cameras + the viewport camera (attached for video recording only).
+        camera_cfg=[*cameras, EgocentricMirroredCameraCfg],
         lighting_cfg=SphereLightCfg,
         background_cfg=HomeOfficeBackgroundCfg,
         contact_gripper=contact_gripper,

@@ -519,9 +519,16 @@ class WorldState:
             force_matrix = contact_sensor.data.force_matrix_w[env_id]
             return torch.any(torch.abs(force_matrix) > force_threshold).item()
         else:
-            # force_matrix_w: (num_envs, num_bodies, num_filter_bodies, 3)
+            # force_matrix_w documented shape: (num_envs, num_bodies, num_filter_bodies, 3).
+            # The reduction below assumes exactly that. Fail loudly if IsaacLab
+            # ever returns a different rank — silent shape drift here would
+            # collapse the env axis and report cross-env contact (every env in
+            # the batch reports True iff any one env has contact).
             force_matrix = contact_sensor.data.force_matrix_w
-            # Reduce over bodies, filter_bodies, and xyz → per-env bool
+            assert force_matrix.ndim == 4 and force_matrix.shape[-1] == 3, (
+                f"in_contact: expected force_matrix_w shape (N, B, M, 3), "
+                f"got {tuple(force_matrix.shape)}"
+            )
             above = torch.abs(force_matrix) > force_threshold  # (N, B, M, 3)
             return above.any(dim=-1).any(dim=-1).any(dim=-1)   # (N,)
 

@@ -19,6 +19,7 @@ Usage:
 """
 
 import logging
+import os
 import time
 import uuid
 
@@ -101,9 +102,14 @@ class DreamZeroClient(InferenceClient):
         self,
         remote_host: str = "localhost",
         remote_port: int = 5000,
-        open_loop_horizon: int = 8,
+        open_loop_horizon: int = 24,
         image_height: int = 180,
         image_width: int = 320,
+        remote_uri: str = None,
+        api_token: str = None,
+        binarize_gripper: bool = False,
+        resize: str = "area",
+        cam2_source: str = "right",
     ) -> None:
         super().__init__()
         self.host = remote_host
@@ -111,6 +117,13 @@ class DreamZeroClient(InferenceClient):
         self.open_loop_horizon = int(open_loop_horizon)
         self.image_height = image_height
         self.image_width = image_width
+        self.binarize_gripper = binarize_gripper
+        self.resize = resize
+        self.cam2_source = cam2_source
+
+        # Auth: explicit param takes priority, then env var, then no auth
+        token = api_token or os.environ.get("DREAMZERO_API_TOKEN")
+        self._auth_headers = {"Authorization": f"Bearer {token}"} if token else {}
 
         # Per-env session IDs. The server uses session_id to track temporal
         # history; parallel envs must not share one or their histories get mixed.
@@ -120,16 +133,30 @@ class DreamZeroClient(InferenceClient):
         self._packer = MsgPackNumpy()
 
         # Connect to server
-        self._uri = f"ws://{remote_host}:{remote_port}"
+        self._uri = remote_uri if remote_uri is not None else f"ws://{remote_host}:{remote_port}"
         self._ws = None
         self._connect_with_retries()
 
     # ---- required hooks -----------------------------------------------
 
     def _extract_observation(self, raw_obs: dict, *, env_id: int = 0) -> dict:
-        external_image_0 = raw_obs["image_obs"]["external_cam"][env_id].clone().detach().cpu().numpy()
-        external_image_1 = raw_obs["image_obs"]["external_cam_2"][env_id].clone().detach().cpu().numpy()
+        image_obs = raw_obs["image_obs"]
+        left_key = "over_shoulder_left_camera" if "over_shoulder_left_camera" in image_obs else "external_cam"
+        right_image = image_obs[left_key][env_id].clone().detach().cpu().numpy()
         wrist_image = raw_obs["image_obs"]["wrist_cam"][env_id].clone().detach().cpu().numpy()
+
+        # Second exterior camera slot (exterior_image_1_left)
+        if self.cam2_source == "black":
+            right_image_2 = np.zeros_like(right_image)
+        else:
+            _cam2_key = {
+                "right":     "over_shoulder_right_camera",
+                "head":      "head_camera",
+                "duplicate": "over_shoulder_left_camera",
+            }.get(self.cam2_source, "over_shoulder_right_camera")
+            if _cam2_key not in image_obs and self.cam2_source in {"right", "duplicate"}:
+                _cam2_key = "external_cam_2" if self.cam2_source == "right" else "external_cam"
+            right_image_2 = image_obs[_cam2_key][env_id].clone().detach().cpu().numpy()
 
         robot_state = raw_obs["proprio_obs"]
         joint_position = robot_state["arm_joint_pos"][env_id].clone().detach().cpu().numpy().astype(np.float32)
@@ -140,8 +167,8 @@ class DreamZeroClient(InferenceClient):
             self._env_session_id[env_id] = str(uuid.uuid4())
 
         return {
-            "external_image_0": external_image_0,
-            "external_image_1": external_image_1,
+            "right_image": right_image,
+            "right_image_2": right_image_2,
             "wrist_image": wrist_image,
             "joint_position": joint_position,
             "gripper_position": gripper_position,
@@ -149,12 +176,12 @@ class DreamZeroClient(InferenceClient):
         }
 
     def _pack_request(self, extracted_obs: dict, instruction: str) -> dict:
-        external_image_0 = self._resize_image(extracted_obs["external_image_0"], self.image_height, self.image_width)
-        external_image_1 = self._resize_image(extracted_obs["external_image_1"], self.image_height, self.image_width)
+        right_resized = self._resize_image(extracted_obs["right_image"], self.image_height, self.image_width)
+        right_resized_2 = self._resize_image(extracted_obs["right_image_2"], self.image_height, self.image_width)
         wrist_resized = self._resize_image(extracted_obs["wrist_image"], self.image_height, self.image_width)
         return {
-            "observation/exterior_image_0_left": external_image_0,
-            "observation/exterior_image_1_left": external_image_1,
+            "observation/exterior_image_0_left": right_resized,
+            "observation/exterior_image_1_left": right_resized_2,
             "observation/wrist_image_left": wrist_resized,
             "observation/joint_position": extracted_obs["joint_position"],
             "observation/cartesian_position": np.zeros(6, dtype=np.float32),
@@ -181,25 +208,38 @@ class DreamZeroClient(InferenceClient):
     # ---- optional hooks -----------------------------------------------
 
     def _postprocess_chunk(self, chunk: np.ndarray) -> np.ndarray:
-        # DreamZero emits continuous gripper values that the downstream
-        # controller interprets directly. Do not binarize here.
         chunk = chunk.copy()
         if chunk.shape[-1] == 7:
             pad = np.zeros((*chunk.shape[:-1], 1), dtype=chunk.dtype)
             chunk = np.concatenate([chunk, pad], axis=-1)
+        if self.binarize_gripper:
+            chunk[..., -1] = (chunk[..., -1] > 0.5).astype(chunk.dtype)
         return chunk
 
     def _build_visualization(self, extracted_obs: dict) -> np.ndarray:
-        img1 = self._resize_image(extracted_obs["external_image_0"], self.image_height, self.image_width)
-        img2 = self._resize_image(extracted_obs["external_image_1"], self.image_height, self.image_width)
-        img3 = self._resize_image(extracted_obs["wrist_image"], self.image_height, self.image_width)
-        return np.concatenate([img1, img2, img3], axis=1)
+        left = self._resize_image(extracted_obs["right_image"], self.image_height, self.image_width)
+        wrist = self._resize_image(extracted_obs["wrist_image"], self.image_height, self.image_width)
+        if self.cam2_source != "black":
+            right = self._resize_image(extracted_obs["right_image_2"], self.image_height, self.image_width)
+            return np.concatenate([left, wrist, right], axis=1)
+        return np.concatenate([left, wrist], axis=1)
 
     # ---- lifecycle overrides ------------------------------------------
 
     def reset(self, *, env_id: int | None = None) -> None:
         """Notify server, clear per-env session ids, then clear chunk state."""
-        self._send_recv(self._packer.pack({"endpoint": "reset"}))
+        # Tell the server exactly which sessions to evict so parallel-env peers
+        # are not disturbed.
+        if env_id is None:
+            session_ids = list(self._env_session_id.values())
+        elif env_id in self._env_session_id:
+            session_ids = [self._env_session_id[env_id]]
+        else:
+            session_ids = []
+        self._send_recv(self._packer.pack({
+            "endpoint": "reset",
+            "session_ids": session_ids or None,
+        }))
         if env_id is None:
             self._env_session_id.clear()
         else:
@@ -245,6 +285,7 @@ class DreamZeroClient(InferenceClient):
                 try:
                     self._ws = websockets.sync.client.connect(
                         self._uri,
+                        additional_headers=self._auth_headers,
                         compression=None,
                         max_size=None,
                         open_timeout=CONNECT_TIMEOUT_SECS,
@@ -255,6 +296,7 @@ class DreamZeroClient(InferenceClient):
                     # Older websockets (e.g. 11.x bundled with Isaac Sim) lacks ping_interval/ping_timeout
                     self._ws = websockets.sync.client.connect(
                         self._uri,
+                        additional_headers=self._auth_headers,
                         compression=None,
                         max_size=None,
                         open_timeout=CONNECT_TIMEOUT_SECS,
@@ -299,6 +341,12 @@ class DreamZeroClient(InferenceClient):
         tag = f"[{self.__class__.__name__}]"
         print(f"{tag} Connection lost. Reconnecting...")
         self._connect_with_retries()
+        # Invalidate all session IDs after any reconnection. The new server
+        # (or a restarted server) has no knowledge of prior frame history, so
+        # continuing with old session IDs would hand stale buffers to the model.
+        # Fresh UUIDs are minted lazily on the next _extract_observation call.
+        self._env_session_id.clear()
+        print(f"{tag} Session IDs invalidated — fresh sessions will be created on next infer.")
 
     def _send_recv(self, data: bytes, *, timeout: float = RECV_TIMEOUT_SECS) -> bytes:
         """Send packed data and receive response with timeout and auto-reconnect."""
@@ -339,16 +387,12 @@ class DreamZeroClient(InferenceClient):
         ) from last_exc
 
     def _resize_image(self, image: np.ndarray, height: int, width: int) -> np.ndarray:
-        # Aspect-preserving resize to (height, width), padded with zeros.
-        # Replicates tf.image.resize_with_pad (what the DreamZero training
-        # pipeline uses); see robolab_policy_client/image_tools.py.
-        from .image_tools import resize_with_pad
-        return resize_with_pad(image, height, width)
-
-        # Previous implementation: cv2.resize with INTER_AREA (no aspect preservation).
-        # import cv2
-        # resized = cv2.resize(image, (width, height), interpolation=cv2.INTER_AREA)
-        # return resized.astype(np.uint8)
+        if self.resize == "pad":
+            from .image_tools import resize_with_pad
+            return resize_with_pad(image, height, width)
+        import cv2
+        interp = cv2.INTER_AREA if self.resize == "area" else cv2.INTER_LINEAR
+        return cv2.resize(image, (width, height), interpolation=interp).astype(np.uint8)
 
 
 if __name__ == "__main__":
@@ -360,6 +404,8 @@ if __name__ == "__main__":
         "image_obs": {
             "external_cam": [torch.zeros((180, 320, 3), dtype=torch.uint8)],
             "external_cam_2": [torch.zeros((180, 320, 3), dtype=torch.uint8)],
+            "over_shoulder_left_camera": [torch.zeros((180, 320, 3), dtype=torch.uint8)],
+            "over_shoulder_right_camera": [torch.zeros((180, 320, 3), dtype=torch.uint8)],
             "wrist_cam": [torch.zeros((180, 320, 3), dtype=torch.uint8)],
         },
         "proprio_obs": {

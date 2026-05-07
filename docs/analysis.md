@@ -27,7 +27,7 @@ By default, the script prints a per-task summary table with success rate, score,
 |------|-------------|
 | *(default)* | Per-task table with success/failure counts, percentages, scores, and trajectory metrics |
 | `--by-attributes` | Groups tasks by benchmark categories (visual, relational, procedural) with attribute breakdowns |
-| `--by-remapped-attributes` | Summarizes by high-level attribute categories only (visual, relational, procedural) |
+| `--by-difficulty` | Summarizes results grouped by difficulty label (simple, moderate, complex) |
 | `--by-scene` | Aggregates results by scene instead of by task |
 | `--by-wrong-objects` | Per-task breakdown of wrong object grasps: success count, fail count, and which objects were grabbed |
 | `--by-instruction-type` | Pivot table comparing success rates across instruction types (default, vague, specific, etc.) |
@@ -103,22 +103,23 @@ python analysis/read_results.py 2025-09-02_13-15-34 --by-wrong-objects --exclude
 The default output includes trajectory metrics columns (EE SPARC, Path Length, Speed):
 
 ```
------------------------------------------------------- EXPERIMENT SUMMARY -------------------------------------------------------
-Task Name                         Success    %     Failure    %     Score    Fail Score  EE SPARC  Path Len  Speed(mean) Speed(max)
----------------------------------------------------------------------------------------------------------------------------------
-TOTAL (120 tasks)                 157/600  26.2%   443/600  73.8%   0.352     0.258       -9.14     3.124     0.064       0.224
----------------------------------------------------------------------------------------------------------------------------------
-BananaInBowlTask                  5/5    100.0%    0/5      0.0%    1.000     N/A         -4.21     1.052     0.071       0.195
-BananaOnPlateTask                 5/5    100.0%    0/5      0.0%    1.000     N/A         -3.87     0.938     0.068       0.188
-BananaThenRubiksCubeTask          4/5     80.0%    1/5     20.0%    0.900     0.500       -5.62     1.845     0.070       0.201
-BlockStackingOrderAgnosticTask    3/5     60.0%    2/5     40.0%    0.700     0.250       -6.18     1.632     0.065       0.210
-BBQSauceInBinTask                 1/5     20.0%    4/5     80.0%    0.300     0.188       -7.43     2.105     0.061       0.219
-BagelsOnPlateTask                 0/5      0.0%    5/5    100.0%    0.125     0.125       -8.95     2.843     0.058       0.231
-...
----------------------------------------------------------------------------------------------------------------------------------
+---------------------------------------------- EXPERIMENT SUMMARY ----------------------------------------------
+Task Name                Success    %     Score(total) Score(fail) Time(s) EE SPARC PathLen(m) Speed(cm/s)
+----------------------------------------------------------------------------------------------------------------
+TOTAL (2 tasks)          6/20      30.0%  0.400        0.143       65.59   -12.86   7.33       2.9
+----------------------------------------------------------------------------------------------------------------
+AnimalsInBinTask         0/10      0.0%   0.000        0.000       -       -7.49    2.02       2.2
+AppleAndYogurtInBowlTask 6/10      60.0%  0.800        0.500       65.59   -18.23   12.63      3.5
+----------------------------------------------------------------------------------------------------------------
 ```
 
-Use `--no-metrics` to hide the trajectory metrics columns.
+Score columns:
+- **`Score(total)`**: mean per-episode score across all episodes (successes contribute 1.0; failures contribute their fractional subtask progress in `[0, 1)`).
+- **`Score(fail)`**: mean per-episode score over failed episodes only — "how close did the failures get."
+
+`Score(total) = success_rate + (1 − success_rate) · Score(fail)`.
+
+`EE SPARC` is the spectral arc length (smoothness) metric; more negative = less smooth. Stationary trajectories return NaN and are excluded from the average. Use `--no-metrics` to hide the trajectory metrics columns.
 
 ---
 

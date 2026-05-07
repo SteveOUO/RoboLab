@@ -463,11 +463,11 @@
   },
   {
     "task_name": "CleanUpToysTask",
-    "instruction": "Clean up all the toys",
+    "instruction": "Clean up all the smaller toys and leave the birdhouse on the table",
     "instruction_variants": {
-      "default": "Clean up all the toys",
-      "vague": "Clean up everything except birdhouse",
-      "specific": "Pick up every toy object (rubiks cube, lizard figurines, colored blocks) from the table and place them all into the bin"
+      "default": "Clean up all the smaller toys and leave the birdhouse on the table",
+      "vague": "Clean up everything except the birdhouse",
+      "specific": "Pick up every toy object (rubiks cube, lizard figurines, colored blocks) from the table and place them all into the bin. Please ignore the birdhouse and don't touch it."
     },
     "episode_s": "300",
     "scene": "toys_cleanup.usda",

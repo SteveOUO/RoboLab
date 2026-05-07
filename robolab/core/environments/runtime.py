@@ -9,6 +9,7 @@ termination checking.
 """
 
 import json
+import logging
 import os
 
 import carb
@@ -20,8 +21,11 @@ from isaaclab.envs import ManagerBasedEnv, ManagerBasedEnvCfg, ManagerBasedRLEnv
 import robolab.constants
 from robolab.constants import get_output_dir
 from robolab.core.environments.config import parse_env_cfg
+from robolab.core.environments.env import RobolabEnv
 from robolab.core.events.utils import merge_events_cfg
 from robolab.core.task.task import resolve_instruction
+
+logger = logging.getLogger(__name__)
 
 
 def check_scene_valid(env: ManagerBasedEnv) -> bool:
@@ -64,7 +68,7 @@ def create_env(scene: str | ManagerBasedEnvCfg,
                     func=reset_camera_pose_uniform,
                     mode="reset",
                     params={
-                        "camera_names": ["external_cam"],
+                        "camera_names": ["over_shoulder_left_camera"],
                         "pose_range": {"x": (-0.05, 0.05), "y": (-0.05, 0.05)},
                     }
                 )
@@ -74,7 +78,7 @@ def create_env(scene: str | ManagerBasedEnvCfg,
         # Or using the configclass helper
         from robolab.core.events.reset_camera import RandomizeCameraPoseUniform
         events = RandomizeCameraPoseUniform.from_params(
-            cameras=["external_cam"],
+            cameras=["over_shoulder_left_camera"],
             pose_range={"x": (-0.05, 0.05), "y": (-0.05, 0.05)}
         )
         env, env_cfg = create_env(scene="BananaEnv", events=events)
@@ -132,14 +136,16 @@ def create_env(scene: str | ManagerBasedEnvCfg,
 
             # Create new environment
             env = gym.make(scene, cfg=env_cfg).unwrapped
-        except Exception as e:
-            if "env" in locals() and hasattr(env, "_is_closed"):
-                env.close()
-            else:
-                if hasattr(e, "obj") and hasattr(e.obj, "_is_closed"):
-                    e.obj.close()
-                else:
-                    raise ValueError(f"Failed to create environment for scene {scene}; exception: {e}")
+        except Exception:
+            # Best-effort cleanup of partially-constructed env; always re-raise
+            # so the caller sees the original traceback (don't wrap in
+            # ValueError — that hides the root cause).
+            if env is not None and hasattr(env, "_is_closed") and not env._is_closed:
+                try:
+                    env.close()
+                except Exception:
+                    logger.exception("env.close() failed during error cleanup")
+            raise
 
     elif isinstance(scene, ManagerBasedEnvCfg):
         # create a new stage
@@ -158,7 +164,7 @@ def create_env(scene: str | ManagerBasedEnvCfg,
             if robolab.constants.VERBOSE:
                 print(f"Merged events into environment configuration: {env_cfg.events}")
 
-        env = ManagerBasedRLEnv(env_cfg)
+        env = RobolabEnv(env_cfg)
     else:
         raise ValueError(f"Unsupported scene type: {type(scene)}")
 

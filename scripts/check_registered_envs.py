@@ -22,8 +22,6 @@ app_launcher = AppLauncher(args_cli)
 simulation_app = app_launcher.app
 
 # Robolab components
-from robolab.core.logging.recorder_manager import patch_recorder_manager
-patch_recorder_manager()
 from robolab.core.environments.factory import get_global_env_factory, get_envs, print_env_table
 
 #############################

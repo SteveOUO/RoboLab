@@ -12,8 +12,8 @@ from robolab.core.logging.results import (
     load_and_merge_episode_data,
     summarize_experiment_results,
     summarize_experiments_by_category_with_attributes,
+    summarize_experiments_by_difficulty,
     summarize_experiments_by_instruction_type,
-    summarize_experiments_by_remapped_attributes,
     summarize_experiments_by_scene,
     summarize_experiments_by_wrong_objects,
     summarize_task_results,
@@ -28,7 +28,7 @@ def main():
     parser.add_argument("--show-episodes", action="store_true", default=False, help="Show the episodes in the results for each task")
     parser.add_argument("--task", type=str, nargs='+', default=None, help="Name(s) of the task(s) to summarize")
     parser.add_argument("--by-attributes", action="store_true", default=False, help="Summarize results in one table with categories (visual, relational, procedural) and their attributes grouped together")
-    parser.add_argument("--by-remapped-attributes", action="store_true", default=False, help="Summarize results by remapped attribute categories (visual, relational, procedural)")
+    parser.add_argument("--by-difficulty", action="store_true", default=False, help="Summarize results grouped by difficulty label (simple, moderate, complex)")
     parser.add_argument("--by-scene", action="store_true", default=False, help="Summarize results by scene instead of by task")
     parser.add_argument("--by-wrong-objects", action="store_true", default=False, help="Summarize each task with columns on wrong objects: success count, fail count, and which objects were grabbed")
     parser.add_argument("--by-instruction-type", action="store_true", default=False, help="Compare task success rates across instruction types (default, vague, specific, etc.) in a pivot table")
@@ -87,8 +87,8 @@ def main():
         if args.by_attributes:
             # Print combined category + attributes table
             summarize_experiments_by_category_with_attributes(episode_results=episode_results, remap=BENCHMARK_TASK_CATEGORIES, VERBOSE=args.verbose, csv=use_csv, show_metrics=show_metrics, csv_compact=args.csv_compact)
-        elif args.by_remapped_attributes:
-            summarize_experiments_by_remapped_attributes(episode_results=episode_results, remap=BENCHMARK_TASK_CATEGORIES, VERBOSE=args.verbose, csv=use_csv, csv_compact=args.csv_compact)
+        elif args.by_difficulty:
+            summarize_experiments_by_difficulty(episode_results=episode_results, VERBOSE=args.verbose, csv=use_csv, show_metrics=show_metrics, csv_compact=args.csv_compact)
         elif args.by_scene:
             summarize_experiments_by_scene(episode_results=episode_results, VERBOSE=args.verbose, csv=use_csv, csv_compact=args.csv_compact)
         elif args.by_wrong_objects:

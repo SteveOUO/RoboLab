@@ -419,13 +419,12 @@ def level(world, object: str, reference_object: str, tolerance: float = 0.1, env
     centroid_ref = world.get_centroid(reference_object, env_id=env_id)
 
     if env_id is not None:
-        result = bool(np.allclose(centroid_obj[:2], centroid_ref[:2], atol=tolerance))
+        result = bool(abs(centroid_obj[2] - centroid_ref[2]) <= tolerance)
         if DEBUG:
             print(f"level: '{object}' at same z-level as '{reference_object}' (tol={tolerance}) -> {result}")
         return result
     else:
-        diff = torch.abs(centroid_obj[:, :2] - centroid_ref[:, :2])
-        return (diff <= tolerance).all(dim=1)
+        return torch.abs(centroid_obj[:, 2] - centroid_ref[:, 2]) <= tolerance
 
 
 def between(world, object: str, reference_obj1: str, reference_obj2: str,

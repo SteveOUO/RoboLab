@@ -8,6 +8,7 @@ This module provides a factory pattern for automatically creating environments
 from task files, integrating with the existing environment creation system.
 """
 
+import inspect
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
@@ -17,6 +18,23 @@ import robolab.constants
 from robolab.constants import TASK_DIR
 from robolab.core.environments.config import generate_env_cfg_from_task, print_env_cfg
 from robolab.core.task.task_utils import resolve_task_path
+
+# Cfg-typed kwargs that may be passed as zero-arg factories instead of classes.
+# When the value is callable (and not a class), the factory invokes it once per
+# task to produce a fresh cfg — letting callers do per-task variation (e.g.
+# random background sampling) without the factory knowing about the variation.
+_RESOLVABLE_CFG_KEYS = {
+    "background_cfg", "camera_cfg", "lighting_cfg",
+    "robot_cfg", "observations_cfg", "actions_cfg",
+}
+
+
+def _resolve_per_task_kwargs(env_kwargs: dict) -> dict:
+    """Invoke per-task cfg factories; pass classes/instances/scalars through unchanged."""
+    return {
+        k: (v() if (k in _RESOLVABLE_CFG_KEYS and callable(v) and not inspect.isclass(v)) else v)
+        for k, v in env_kwargs.items()
+    }
 
 
 class EnvFactory:
@@ -135,6 +153,7 @@ class EnvFactory:
                 background_cfg=WarehouseBackgroundCfg,
             )
         """
+        env_kwargs = _resolve_per_task_kwargs(env_kwargs)
         task_file_path, task_name = resolve_task_path(task, self.task_dir)
 
         # Create and register the environment

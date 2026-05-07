@@ -219,6 +219,7 @@ def compute_sparc(
     padlevel: int = 4,
     fc: float = 10.0,
     amplitude_threshold: float = 0.05,
+    min_speed: float = 1e-6,
 ) -> float:
     """
     Compute Spectral Arc Length (SPARC) smoothness metric.
@@ -239,10 +240,20 @@ def compute_sparc(
         fc: Maximum cutoff frequency for arc length calculation (Hz)
         amplitude_threshold: Threshold for determining adaptive cutoff frequency,
                              as a fraction of the maximum amplitude
+        min_speed: Motion gate. Trajectories with max(speed) below this return NaN.
 
     Returns:
         sparc: SPARC value (negative scalar). More negative = smoother.
+               NaN for stationary trajectories (see motion gate below).
     """
+    # Motion gate: SPARC on a stationary signal returns a fixed arc-length artifact
+    # (~-0.75 with default fc=10 Hz) that comes from the geometric sweep of an empty
+    # spectrum and is indistinguishable from a real smooth movement. Without gating,
+    # failed/stuck episodes silently bias the SPARC average toward zero. Return NaN
+    # so callers can exclude these samples (math.isfinite filter in result aggregation).
+    if len(speed) < 2 or np.max(np.abs(speed)) < min_speed:
+        return float('nan')
+
     # Number of samples
     N = len(speed)
 
@@ -353,7 +364,11 @@ def compute_ee_sparc_from_position(ee_position: np.ndarray, dt: float, **kwargs)
 
     Returns:
         sparc: SPARC value (negative scalar). More negative = less smooth.
+               NaN for trajectories shorter than 2 samples or stationary motion.
     """
+    if len(ee_position) < 2:
+        return float('nan')
+
     # Compute velocity using central differences
     velocity = np.gradient(ee_position, dt, axis=0)  # (T, 3)
 

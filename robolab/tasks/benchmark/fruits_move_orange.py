@@ -18,7 +18,7 @@ class FruitsMovingTerminations:
     time_out = DoneTerm(func=mdp.time_out, time_out=True)
     success = DoneTerm(
         func=object_in_container,
-        params={"object": ["orange_01", "orange_02"], "container": "wooden_bowl", "logical": "any", "tolerance": 0.0, "require_contact_with": True, "require_gripper_detached": True}
+        params={"object": ["orange_01", "orange_02"], "container": "serving_bowl", "logical": "any", "tolerance": 0.0, "require_contact_with": True, "require_gripper_detached": True}
     )
 
 @dataclass

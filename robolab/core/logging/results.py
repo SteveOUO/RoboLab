@@ -241,13 +241,8 @@ def get_wrong_object_stats(episode_results: list[dict], exclude_containers: bool
         if log_file is None:
             continue
 
-        log_data = load_file(log_file)
-
-        if log_data is None:
-            continue
-
-        # Extract status changes from log (with consecutive deduplication applied)
-        status_changes = extract_subtask_status_changes(log_data)
+        # v1 + v2 aware loader returns v1-shaped status_changes
+        status_changes = load_event_log(log_file)
 
         if not status_changes:
             continue
@@ -371,13 +366,8 @@ def summarize_timestep_errors(episode_results: list[dict], indent: str = "  ") -
         if log_file is None:
             continue
 
-        log_data = load_file(log_file)
-
-        if log_data is None:
-            continue
-
-        # Extract status changes from log
-        status_changes = extract_subtask_status_changes(log_data)
+        # v1 + v2 aware loader returns v1-shaped status_changes
+        status_changes = load_event_log(log_file)
 
         if not status_changes:
             continue
@@ -497,6 +487,57 @@ def get_all_env_subtask_infos(env) -> list[dict] | None:
     for term in env.recorder_manager._terms.values():
         if hasattr(term, 'infos') and hasattr(term, 'subtask_state_machines'):
             return copy.deepcopy(term.infos)
+
+    return None
+
+
+def load_event_log(log_file: str) -> list[dict]:
+    """Load a per-env event log and return a v1-shaped ``status_changes`` list
+    (each dict has ``step``, ``status``, ``info``, ``score`` plus any extras)
+    regardless of whether the file is v1 (dense per-step list with
+    ``all_status_codes``) or v2 (sparse ``events`` array under
+    ``schema_version: 2``).
+
+    Returns an empty list if the file is missing, unreadable, or empty.
+    """
+    if not os.path.exists(log_file):
+        return []
+    log_data = load_file(log_file)
+    if log_data is None:
+        return []
+    if isinstance(log_data, dict) and log_data.get("schema_version") == 2:
+        return [
+            {
+                "step": e.get("step", -1),
+                "status": e.get("code", 0),
+                "info": e.get("info", ""),
+                "score": e.get("score", 0.0),
+                "completed": e.get("completed", 0),
+                "total": e.get("total", 0),
+            }
+            for e in log_data.get("events", [])
+        ]
+    if isinstance(log_data, list):
+        return extract_subtask_status_changes(log_data)
+    return []
+
+
+def get_all_env_events(env) -> list[list[dict]] | None:
+    """Get the per-env v2 event log accumulated by the recorder term.
+
+    Returns a list of length num_envs; each element is a list of event dicts
+    of the form {"step", "code", "name", "info", "score"}. Events accumulate
+    across the current episode and are cleared on reset().
+    """
+    if env.recorder_manager is None:
+        return None
+
+    if not hasattr(env.recorder_manager, '_terms'):
+        return None
+
+    for term in env.recorder_manager._terms.values():
+        if hasattr(term, 'get_events') and hasattr(term, 'subtask_state_machines'):
+            return term.get_events()
 
     return None
 
@@ -1021,7 +1062,7 @@ def get_grouped_result_table_str(episode_results: list[dict],
     failure_pct_width = len("100.0% ")
 
     # Optional column widths
-    avg_score_width = len("Avg Score") if show_scores else 0
+    avg_score_width = len("Score(total)") if show_scores else 0
     avg_score_fail_width = len("Score(fail)") if show_scores else 0
     success_eps_width = len("Eps(succ)") if show_eps else 0
     duration_width = len("Time(s)") if show_duration else 0
@@ -1286,8 +1327,10 @@ def get_grouped_result_table_str(episode_results: list[dict],
         ]
     if show_scores:
         if csv:
+            header_parts.append("Score(total)")
             header_parts.append("Score(fail)")
         else:
+            header_parts.append(f"{'Score(total)':<{avg_score_width}}")
             header_parts.append(f"{'Score(fail)':<{avg_score_fail_width}}")
     if show_duration:
         if csv:
@@ -1376,11 +1419,15 @@ def get_grouped_result_table_str(episode_results: list[dict],
         ]
 
     if show_scores:
+        total_avg_score = get_avg_score(episode_results)
+        total_avg_score_str = format_score(total_avg_score)
         total_avg_score_fail = get_avg_score(episode_results, fail_only=True)
         total_avg_score_fail_str = format_score(total_avg_score_fail)
         if csv:
+            total_row_parts.append(total_avg_score_str)
             total_row_parts.append(total_avg_score_fail_str)
         else:
+            total_row_parts.append(f"{total_avg_score_str:<{avg_score_width}}")
             total_row_parts.append(f"{total_avg_score_fail_str:<{avg_score_fail_width}}")
 
     if show_duration:
@@ -1554,8 +1601,10 @@ def get_grouped_result_table_str(episode_results: list[dict],
 
         if show_scores:
             if csv:
+                row_parts.append(avg_score_str)
                 row_parts.append(avg_score_fail_str)
             else:
+                row_parts.append(f"{avg_score_str:<{avg_score_width}}")
                 row_parts.append(f"{avg_score_fail_str:<{avg_score_fail_width}}")
 
         if show_duration:
@@ -1808,6 +1857,7 @@ def summarize_experiments_by_category_with_attributes(episode_results: list[dict
     name_width = max(len("Attribute"), max(len(cat) for cat in category_to_attrs.keys()), max(len(attr) for attr in remap.keys())) + 2
     success_count_width = len("000/000 ")
     success_pct_width = len("100.0% ")
+    score_total_width = len("Score(total) ")
     score_fail_width = len("Score(fail) ")
     duration_width = len("Time(s) ")
     duration_stddev_width = len("Time σ ") if show_metric_stddev else 0
@@ -1827,14 +1877,14 @@ def summarize_experiments_by_category_with_attributes(episode_results: list[dict
     if csv:
         if csv_compact:
             # Compact: value (± stddev) in one column
-            header_parts = ["Category/Attribute", "Success", "Success %", "Total", "Score(fail)", "Time(s)"]
+            header_parts = ["Category/Attribute", "Success", "Success %", "Total", "Score(total)", "Score(fail)", "Time(s)"]
             if show_wrong_objects:
                 header_parts.extend(["WrongObj Total", "WrongObj Succ", "WrongObj Fail"])
             if show_metrics:
                 header_parts.extend(["EE SPARC", "PathLen(m)", "Speed(cm/s)"])
         else:
             # Separate stddev columns
-            header_parts = ["Category/Attribute", "Success", "Success %", "Total", "Score(fail)", "Time(s)", "Time σ"]
+            header_parts = ["Category/Attribute", "Success", "Success %", "Total", "Score(total)", "Score(fail)", "Time(s)", "Time σ"]
             if show_wrong_objects:
                 header_parts.extend(["WrongObj Total", "WrongObj Succ", "WrongObj Fail"])
             if show_metrics:
@@ -1844,6 +1894,7 @@ def summarize_experiments_by_category_with_attributes(episode_results: list[dict
             f"{'Category/Attribute':<{name_width}}",
             f"{'Success':<{success_count_width}}",
             f"{'  %':<{success_pct_width}}",
+            f"{'Score(total)':<{score_total_width}}",
             f"{'Score(fail)':<{score_fail_width}}",
             f"{'Time(s)':<{duration_width}}"
         ]
@@ -1864,7 +1915,7 @@ def summarize_experiments_by_category_with_attributes(episode_results: list[dict
     header = sep.join(header_parts)
 
     # Calculate total width
-    total_width = name_width + success_count_width + success_pct_width + score_fail_width + duration_width + 5
+    total_width = name_width + success_count_width + success_pct_width + score_total_width + score_fail_width + duration_width + 6
     if show_metric_stddev:
         total_width += duration_stddev_width
     if show_wrong_objects:
@@ -1878,6 +1929,8 @@ def summarize_experiments_by_category_with_attributes(episode_results: list[dict
     total_num_success = sum(1 for ep in episode_results if ep.get("success"))
     total_num_total = len(episode_results)
     total_success_rate = total_num_success / total_num_total if total_num_total > 0 else 0
+    total_avg_score = get_avg_score(episode_results)
+    total_avg_score_str = format_score(total_avg_score)
     total_avg_score_fail = get_avg_score(episode_results, fail_only=True)
     total_avg_score_fail_str = format_score(total_avg_score_fail)
 
@@ -1949,6 +2002,7 @@ def summarize_experiments_by_category_with_attributes(episode_results: list[dict
                 str(total_num_success),
                 f"{total_success_rate*100:.1f}",
                 str(total_num_total),
+                total_avg_score_str,
                 total_avg_score_fail_str,
                 format_compact_value(total_duration_str, total_stddev_str)
             ]
@@ -1969,6 +2023,7 @@ def summarize_experiments_by_category_with_attributes(episode_results: list[dict
                 str(total_num_success),
                 f"{total_success_rate*100:.1f}",
                 str(total_num_total),
+                total_avg_score_str,
                 total_avg_score_fail_str,
                 total_duration_str,
                 total_stddev_str
@@ -1991,6 +2046,7 @@ def summarize_experiments_by_category_with_attributes(episode_results: list[dict
             f"{BOLD}{'TOTAL':<{name_width}}{RESET}",
             f"{GREEN}{total_num_success}/{total_num_total:<{success_count_width-4}}{RESET}",
             f"{GREEN}{total_success_rate*100:.1f}%{'':<{success_pct_width-6}}{RESET}",
+            f"{total_avg_score_str:<{score_total_width}}",
             f"{total_avg_score_fail_str:<{score_fail_width}}",
             f"{total_duration_str:<{duration_width}}"
         ]
@@ -2026,6 +2082,8 @@ def summarize_experiments_by_category_with_attributes(episode_results: list[dict
         num_total = len(episodes)
         success_rate = num_success / num_total if num_total > 0 else 0
 
+        avg_score = get_avg_score(episodes)
+        avg_score_str = format_score(avg_score)
         avg_score_fail = get_avg_score([ep for ep in episodes if not ep.get("success")], fail_only=False)
         avg_score_fail_str = format_score(avg_score_fail)
 
@@ -2098,6 +2156,7 @@ def summarize_experiments_by_category_with_attributes(episode_results: list[dict
                     str(num_success),
                     f"{success_rate*100:.1f}",
                     str(num_total),
+                    avg_score_str,
                     avg_score_fail_str,
                     format_compact_value(duration_str, stddev_str)
                 ]
@@ -2118,6 +2177,7 @@ def summarize_experiments_by_category_with_attributes(episode_results: list[dict
                     str(num_success),
                     f"{success_rate*100:.1f}",
                     str(num_total),
+                    avg_score_str,
                     avg_score_fail_str,
                     duration_str,
                     stddev_str
@@ -2141,6 +2201,7 @@ def summarize_experiments_by_category_with_attributes(episode_results: list[dict
                     f"{BOLD}{display_name:<{name_width}}{RESET}",
                     f"{GREEN}{num_success}/{num_total:<{success_count_width-4}}{RESET}",
                     f"{GREEN}{success_rate*100:.1f}%{'':<{success_pct_width-6}}{RESET}",
+                    f"{avg_score_str:<{score_total_width}}",
                     f"{avg_score_fail_str:<{score_fail_width}}",
                     f"{duration_str:<{duration_width}}"
                 ]
@@ -2149,6 +2210,7 @@ def summarize_experiments_by_category_with_attributes(episode_results: list[dict
                     f"{display_name:<{name_width}}",
                     f"{GREEN}{num_success}/{num_total:<{success_count_width-4}}{RESET}",
                     f"{GREEN}{success_rate*100:.1f}%{'':<{success_pct_width-6}}{RESET}",
+                    f"{avg_score_str:<{score_total_width}}",
                     f"{avg_score_fail_str:<{score_fail_width}}",
                     f"{duration_str:<{duration_width}}"
                 ]
@@ -2192,148 +2254,6 @@ def summarize_experiments_by_category_with_attributes(episode_results: list[dict
         print("-" * total_width)
 
 
-def summarize_experiments_by_remapped_attributes(episode_results: list[dict] | str,
-                                                  remap: dict[str, str] = None,
-                                                  VERBOSE=False,
-                                                  csv=False,
-                                                  csv_compact=False):
-    """
-    Summarize results for all tasks in an experiment by remapped attribute categories.
-
-    Maps fine-grained attributes to higher-level categories using the provided remap dict,
-    then groups episodes by these categories and calculates success/failure statistics.
-
-    Args:
-        episode_results: List of episode results or path to episode_results.json
-        remap: Dictionary mapping attribute names to category names.
-               If None, uses BENCHMARK_TASK_CATEGORIES from paths.py
-        VERBOSE: If True, print detailed information for each category
-        csv: If True, output in CSV format
-        csv_compact: If True, combine value and stddev into single column like '-9.14 (± 4.72)'
-    """
-    if remap is None:
-        remap = BENCHMARK_TASK_CATEGORIES
-
-    # Load data from files or dicts
-    if not isinstance(episode_results, list):
-        episode_results = load_file(episode_results)
-
-    # Check if episode_results is None or empty
-    if episode_results is None or len(episode_results) == 0:
-        print(f"No episode results found or file is empty.")
-        return
-
-    # Group episodes by remapped categories
-    category_results = {}
-    all_categories = set()
-    unmapped_attributes = set()
-
-    for episode in episode_results:
-        attributes = episode.get("attributes", [])
-        if attributes is None:
-            continue
-
-        # Map each attribute to its category
-        episode_categories = set()
-        for attr in attributes:
-            if attr in remap:
-                episode_categories.add(remap[attr])
-            else:
-                unmapped_attributes.add(attr)
-
-        # Add episode to each category it belongs to
-        for category in episode_categories:
-            all_categories.add(category)
-            if category not in category_results:
-                category_results[category] = {"success": [], "failure": []}
-
-            if episode.get("success"):
-                category_results[category]["success"].append(episode)
-            else:
-                category_results[category]["failure"].append(episode)
-
-    # Sort categories alphabetically
-    sorted_categories = sorted(all_categories)
-
-    if len(sorted_categories) == 0:
-        print(f"No remapped categories found in episode results.")
-        if unmapped_attributes:
-            print(f"Unmapped attributes: {sorted(unmapped_attributes)}")
-        return
-
-    if VERBOSE:
-        # Calculate overall stats
-        num_success = sum(1 for ep in episode_results if ep.get("success"))
-        num_failure = sum(1 for ep in episode_results if not ep.get("success"))
-        num_total = len(episode_results)
-        success_rate = num_success / num_total if num_total > 0 else 0
-        avg_score = get_avg_score(episode_results)
-        avg_score_str = format_score(avg_score)
-
-        print(f"-------------EXPERIMENT SUMMARY BY REMAPPED CATEGORIES-------------------")
-        print(f"Mapping: {remap}")
-        print(f"Total episodes: {num_total}, Categories: {len(sorted_categories)}")
-        print(f"{GREEN}Success {num_success}/{num_total} ({success_rate*100:.2f}%){RESET}, avg score: {avg_score_str}")
-        if unmapped_attributes:
-            print(f"Unmapped attributes (excluded): {sorted(unmapped_attributes)}")
-        print(f"----------------------------------------------------------------")
-
-        for category in sorted_categories:
-            cat_data = category_results[category]
-            num_success, num_failure, num_total, success_rate, failure_rate, success_runs, failure_runs = get_success_stats(cat_data)
-
-            # Calculate average scores for episodes with this category
-            episodes_with_cat = success_runs + failure_runs
-            avg_score = get_avg_score(episodes_with_cat)
-            avg_score_str = format_score(avg_score)
-
-            # Find which original attributes map to this category
-            original_attrs = [attr for attr, cat in remap.items() if cat == category]
-
-            # Use get_grouped_result_table_str to display tasks under this category
-            header, total_line, table, total_width = get_grouped_result_table_str(episodes_with_cat, group_by="task", show_scores=True, show_eps=True, show_duration=True, csv_compact=csv_compact)
-
-            print(format_centered_header(f"{category} (from: {', '.join(original_attrs)})", total_width))
-            print(header)
-            print("-" * total_width)
-
-            print(total_line)
-            print(table)
-        print("-" * total_width)
-    else:
-        # Create modified episode results with remapped attributes for table display
-        remapped_episodes = []
-        for episode in episode_results:
-            attributes = episode.get("attributes", [])
-            if attributes is None:
-                continue
-
-            # Get unique categories for this episode
-            categories = set()
-            for attr in attributes:
-                if attr in remap:
-                    categories.add(remap[attr])
-
-            if categories:
-                # Create a copy with remapped attributes
-                ep_copy = episode.copy()
-                ep_copy["attributes"] = list(categories)
-                remapped_episodes.append(ep_copy)
-
-        print_result_table(
-            remapped_episodes,
-            group_by="attributes",
-            title="EXPERIMENT SUMMARY BY REMAPPED CATEGORIES",
-            show_scores=True,
-            show_eps=False,
-            show_duration=True,
-            csv=csv,
-            csv_compact=csv_compact,
-        )
-
-        if unmapped_attributes:
-            print(f"\nUnmapped attributes (excluded from above): {sorted(unmapped_attributes)}")
-
 def load_task_to_scene_mapping() -> dict[str, str]:
     """
     Load task metadata and create a mapping from task names to scene names.
@@ -2364,6 +2284,58 @@ def load_task_to_scene_mapping() -> dict[str, str]:
 def summarize_experiments_by_instruction_type(episode_results: list[dict] | str, VERBOSE=False, csv=False, csv_compact=False, show_metrics=True):
     """Summarize results comparing different instruction types. (Not yet implemented.)"""
     print("[RoboLab] summarize_experiments_by_instruction_type is not yet implemented.")
+
+
+DIFFICULTY_LABELS = ('simple', 'moderate', 'complex')
+
+
+def summarize_experiments_by_difficulty(episode_results: list[dict] | str,
+                                         VERBOSE=False,
+                                         csv=False,
+                                         show_metrics=True,
+                                         csv_compact=False):
+    """
+    Summarize results grouped by difficulty label (simple / moderate / complex).
+
+    Difficulty labels are appended to each episode's `attributes` list at env-config
+    build time (see compute_difficulty_score in subtask_utils.py). This function
+    filters out all non-difficulty attributes so the resulting table has exactly
+    three rows.
+    """
+    if not isinstance(episode_results, list):
+        episode_results = load_file(episode_results)
+
+    if episode_results is None or len(episode_results) == 0:
+        print("No episode results found or file is empty.")
+        return
+
+    filtered = []
+    for ep in episode_results:
+        attrs = ep.get("attributes") or []
+        diff_attrs = [a for a in attrs if a in DIFFICULTY_LABELS]
+        if not diff_attrs:
+            continue
+        ep_copy = ep.copy()
+        ep_copy["attributes"] = diff_attrs
+        filtered.append(ep_copy)
+
+    if not filtered:
+        print("No episodes with difficulty labels found. (Episodes need 'simple', 'moderate', or 'complex' in their attributes list.)")
+        return
+
+    print_result_table(
+        filtered,
+        group_by="attributes",
+        title="EXPERIMENT SUMMARY BY DIFFICULTY",
+        show_scores=True,
+        show_eps=False,
+        show_total=False,
+        show_duration=True,
+        show_metrics=show_metrics,
+        show_metric_stddev=VERBOSE,
+        csv=csv,
+        csv_compact=csv_compact,
+    )
 
 
 def summarize_experiments_by_scene(episode_results: list[dict] | str, VERBOSE=False, csv=False, csv_compact=False):
@@ -2598,24 +2570,20 @@ def summarize_task_results(episode_results: list[dict] | str, VERBOSE=False, csv
             print()
 
 def _print_subtask_from_json(task_output_dir: str, episode_id: int, step_dt: float = None, indent: str = "    ", run_idx: int = None, env_id: int = None):
-    """Print subtask status from JSON log file."""
+    """Print subtask status from JSON log file (v1 or v2 aware)."""
     # Try per-env log file first (multi-env), then legacy format
-    log_data = None
+    status_changes: list[dict] = []
     if run_idx is not None and env_id is not None:
         per_env_path = os.path.join(task_output_dir, f"log_{run_idx}_env{env_id}.json")
-        log_data = load_file(per_env_path) if os.path.exists(per_env_path) else None
-    if log_data is None:
+        if os.path.exists(per_env_path):
+            status_changes = load_event_log(per_env_path)
+    if not status_changes:
         rid = run_idx if run_idx is not None else episode_id
-        log_data = load_file(os.path.join(task_output_dir, f"log_{rid}.json"))
+        legacy_path = os.path.join(task_output_dir, f"log_{rid}.json")
+        status_changes = load_event_log(legacy_path)
 
-    if log_data is None:
+    if not status_changes:
         print(f"{indent}No subtask log found for episode {episode_id}")
-        return
-
-    status_changes = extract_subtask_status_changes(log_data)
-
-    if len(status_changes) == 0:
-        # print(f"{indent}No subtask status changes in episode {episode_id}")
         return
 
     status_width = max(len(get_status_name(change["status"])) for change in status_changes)

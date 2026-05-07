@@ -11,6 +11,7 @@ This module provides functions for:
 - Parsing environment configurations from the registry
 """
 
+import logging
 from typing import Any, Type
 
 import gymnasium as gym
@@ -23,6 +24,8 @@ from robolab.core.environments.base import RobolabDefaultEnvCfg
 from robolab.core.sensors.contact_sensor_utils import create_contact_sensors
 from robolab.core.task.task import Task
 from robolab.core.task.task_utils import load_task_from_file
+
+logger = logging.getLogger(__name__)
 
 # ============================================================================
 # Scene Environment Configuration Generation
@@ -87,7 +90,7 @@ def generate_task_env_cfg(task_class: Task,
                          num_envs: int = 1,
                          eye: tuple[float, float, float] = (1.5, 0.0, 1.0),
                          lookat: tuple[float, float, float] = (0.2, 0.0, 0.0),
-                         env_spacing: float = 5.0) -> Type[RobolabDefaultEnvCfg]:
+                         env_spacing: float = 10.0) -> Type[RobolabDefaultEnvCfg]:
     """
     Generate a complete task environment configuration class.
 
@@ -222,6 +225,17 @@ def register_generated_env(task_env_cfg: RobolabDefaultEnvCfg, env_name: str = N
     if env_name is None:
         env_name = task_env_cfg.__name__.replace('EnvCfg', '')
 
+    if env_name in gym.envs.registry:
+        existing_cfg = (gym.envs.registry[env_name].kwargs or {}).get("env_cfg_entry_point")
+        if existing_cfg is task_env_cfg:
+            # Idempotent re-registration with the same config — skip silently.
+            return env_name
+        logger.warning(
+            "Re-registering env '%s' with a different env_cfg_entry_point "
+            "(was %s, now %s); previous registration will be replaced.",
+            env_name, existing_cfg, task_env_cfg,
+        )
+
     gym.register(
         id=env_name,
         entry_point="robolab.core.environments.env:RobolabEnv",
@@ -283,7 +297,7 @@ def parse_env_cfg(
     device: str = "cuda:0",
     seed: int = None,
     num_envs: int | None = None,
-    env_spacing: float = 5.0,
+    env_spacing: float = 10.0,
     eye: tuple[float, float, float] = (1.5, 0.0, 1.0),
     lookat: tuple[float, float, float] = (0.2, 0.0, 0.0),
     use_fabric: bool | None = None,
@@ -295,7 +309,7 @@ def parse_env_cfg(
         task_name: The name of the environment.
         device: The device to run the simulation on. Defaults to "cuda:0".
         num_envs: Number of environments to create. Defaults to None, in which case it is left unchanged.
-        env_spacing: Spacing between environments. Defaults to 7.0.
+        env_spacing: Spacing between environments. Defaults to 10.0.
         eye: Eye position for the viewer. Defaults to (1.5, 0.0, 1.0).
         lookat: Lookat position for the viewer. Defaults to (0.2, 0.0, 0.0).
         seed: Seed for the random number generator. Defaults to None, in which case it is left unchanged.

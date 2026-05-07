@@ -630,7 +630,12 @@ def object_upright(
     """Checks if objects are standing upright (oriented correctly)."""
     def condition(world, obj, env_id=None):
         result = upright(world, obj, tolerance, up_axis, env_id=env_id)
-        if require_contact_with and require_contact_with is not True:
+        if require_contact_with is True:
+            raise ValueError(
+                "object_upright(require_contact_with=True) is invalid: object_upright "
+                "has no reference_object. Pass a body name (str) or list of body names instead."
+            )
+        if require_contact_with:
             result = _and(result, in_contact(world, obj, require_contact_with, env_id=env_id))
         if require_gripper_detached:
             result = _and(result, _not(in_contact(world, obj, gripper_name, env_id=env_id)))

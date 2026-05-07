@@ -20,7 +20,7 @@
 
 ## Getting Started
 
-Requires [Isaac Lab](https://github.com/isaac-sim/IsaacLab) and [uv](https://docs.astral.sh/uv/getting-started/installation/). See [Requirements](#requirements) for versions and hardware.
+Requires [uv](https://docs.astral.sh/uv/getting-started/installation/). Isaac Sim 5.0 and Isaac Lab 2.2.0 are installed automatically via `uv sync`. See [Requirements](#requirements) for hardware.
 
 ### Installation
 
@@ -29,9 +29,15 @@ git clone https://github.com/NVlabs/RoboLab.git
 cd robolab
 uv venv --python 3.11
 source .venv/bin/activate
-uv pip install "setuptools<81"
 uv sync
 ```
+
+On first run, Isaac Sim prompts you to accept the NVIDIA Omniverse EULA. Either accept it interactively, or set it once in your shell:
+```bash
+export OMNI_KIT_ACCEPT_EULA=Y
+```
+
+> **Running without activating the venv**: if you don't `source .venv/bin/activate`, prefix every `python` command with `uv run` (e.g. `uv run python scripts/check_registered_envs.py`).
 
 Verify installation:
 ```bash
@@ -51,6 +57,13 @@ python examples/demo/run_recorded.py --headless
 ### Run with a policy
 
 RoboLab uses a **server-client architecture**: your model runs as a standalone server, and RoboLab connects to it via a lightweight inference client. To quickly test RoboLab, try [Pi0-5 via OpenPI](docs/inference.md#openpi-pi0--pi0-fast--pi05).
+
+Each inference client has its own lightweight Python dependency — e.g. Pi0 / Pi0-fast / Pi05 need `openpi-client`, which is **not** installed by `uv sync`. Install only the client(s) you need; see [docs/inference.md](docs/inference.md) for each backend. For example, to use the Pi0 family:
+```bash
+# Clone the OpenPI repo separately and install its client into the RoboLab venv
+git clone git@github.com:xuningy/openpi.git ../openpi
+uv pip install -e ../openpi/packages/openpi-client
+```
 
 1. Start your policy server in a separate terminal.
 2. Run evaluation:
@@ -141,6 +154,6 @@ The RoboLab framework is released under [CC-BY-NC-4.0](https://creativecommons.o
 }
 ```
 
-### Acknowledgements
+## Contributing
 
-We thank the following additional contributors for their help in building RoboLab: Arhan Jain, Alperen Degirmenci, Siyi Chen
+See [CONTRIBUTING.md](CONTRIBUTING.md) for acknowledgements, issues, and how to contribute.

@@ -9,6 +9,7 @@ authors = [{name = "Xuning Yang"}]
 dependencies = [
     # Core
     "isaaclab==2.2.0",
+    "isaacsim[all,extscache]==5.0.0",
     "torch",
     "numpy",
     "gymnasium",
@@ -20,6 +21,7 @@ dependencies = [
     # Computer vision and image processing
     "opencv-python",
     "Pillow",
+    "imageio[ffmpeg]",
     # Scientific computing
     "scipy",
     "matplotlib",
@@ -31,6 +33,7 @@ dependencies = [
     "tqdm",
     "tyro",
     "python-dotenv",
+    "setuptools<81",
 ]
 
 [project.optional-dependencies]
@@ -50,6 +53,13 @@ include = ["robolab", "robolab.*", "robolab_policy_client", "robolab_policy_clie
 prerelease = "allow"
 index-strategy = "unsafe-best-match"
 no-build-isolation-package = ["flatdict"]
+# warp-lang 1.13.0.dev20260418 on pypi.nvidia.com only published the macOS
+# wheel — no Linux build — so any resolver pass that picked it would break
+# `uv sync` on Linux. Exclude that specific version.
+constraint-dependencies = ["warp-lang != 1.13.0.dev20260418"]
+
+[tool.uv.extra-build-dependencies]
+flatdict = ["setuptools<81"]
 
 [[tool.uv.index]]
 name = "pytorch-cu128"

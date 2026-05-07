@@ -2,18 +2,19 @@
 # SPDX-License-Identifier: CC-BY-NC-4.0
 
 import gc
+import logging
 import os
 from collections.abc import Sequence
 
-import isaaclab.envs.manager_based_env as manager_based_env
 import psutil
 import torch
 from isaaclab.envs.manager_based_env import ManagerBasedEnv
 from isaaclab.managers.recorder_manager import DatasetExportMode, RecorderManager, RecorderManagerBaseCfg
 from isaaclab.utils.datasets import EpisodeData
 
-from robolab.constants import DEBUG
 from robolab.core.logging.streaming_hdf5_handler import StreamingHDF5DatasetFileHandler
+
+logger = logging.getLogger(__name__)
 
 
 def get_memory_usage_mb() -> float:
@@ -53,14 +54,6 @@ def get_episode_data_size(episode: EpisodeData) -> dict:
         "size_mb": total_size_mb,
         "details": result["details"]
     }
-
-
-def patch_recorder_manager():
-    """Monkey patch the RecorderManager in the base environment module."""
-    # Replace the RecorderManager class with our CustomRecorderManager
-    manager_based_env.RecorderManager = RobolabRecorderManager
-    if DEBUG:
-        print("[INFO] Patched RecorderManager with RobolabRecorderManager (with streaming support)")
 
 
 class RobolabRecorderManager(RecorderManager):
@@ -443,6 +436,27 @@ class RobolabRecorderManager(RecorderManager):
 
         if hasattr(self, "_episodes"):
             for env_id in env_ids:
+                # If a streaming episode is open in the file handler, finalize
+                # it before discarding the in-memory buffer; otherwise the
+                # demo group is left half-finalized on disk with no `success`.
+                if self._streaming_active.get(env_id, False):
+                    episode_index = (
+                        self._current_episode_index.get(env_id)
+                        if hasattr(self, "_current_episode_index") else None
+                    )
+                    for handler in (
+                        getattr(self, "_dataset_file_handler", None),
+                        getattr(self, "_failed_episode_dataset_file_handler", None),
+                    ):
+                        if handler is not None and hasattr(handler, "end_episode"):
+                            try:
+                                handler.end_episode(episode_index=episode_index)
+                            except Exception:
+                                logger.exception(
+                                    "Failed to finalize streaming episode for "
+                                    "env_id=%d during clear(); demo may be incomplete.",
+                                    env_id,
+                                )
                 self._episodes[env_id] = EpisodeData()
                 # Reset streaming state since we're clearing
                 self._streaming_active[env_id] = False

@@ -76,11 +76,31 @@ parser.add_argument("--open-loop-horizon", "--open_loop_horizon", type=int, defa
                        help="Number of actions to execute from each predicted chunk before requesting a new one. "
                             "If omitted, each inference client uses its own default. "
                             "Must match the model's action_horizon for best performance.")
+# DreamZero-specific flags (silently ignored by other backends via create_client kwarg filtering)
+parser.add_argument("--dz-binarize-gripper", "--dz_binarize_gripper", action="store_true",
+                    help="[DreamZero] Re-enable gripper binarization at 0.5 threshold (ablation; default: off)")
+parser.add_argument("--dz-resize", "--dz_resize", type=str, default="area", choices=["area", "linear", "pad"],
+                    help="[DreamZero] Image resize method: 'area' (default, INTER_AREA), 'linear' (INTER_LINEAR), "
+                         "or 'pad' (aspect-preserving letterbox). Note: 'area'/'linear' change aspect ratio if "
+                         "source differs from 180x320 target.")
+parser.add_argument("--remote-token", "--remote_token", type=str, default=None,
+                    help="Bearer token for authenticated endpoints (e.g. Lepton). "
+                         "Falls back to DREAMZERO_API_TOKEN env var.")
+parser.add_argument("--dz-cam2", "--dz_cam2", type=str, default="black",
+                    choices=["black", "right", "head", "duplicate"],
+                    help="[DreamZero] Second exterior camera: 'black' (default, matches training dropout), "
+                         "'right' (over-shoulder), 'head' (front overhead), 'duplicate' (copy of left)")
 parser.add_argument("--instruction-type", "--instruction_type", type=str, default="default",
                        help="Which instruction variant to use when a task defines multiple (default, vague, specific, etc.)")
 parser.add_argument("--video-mode", "--video_mode", type=str, default="all",
                     choices=["all", "viewport", "sensor", "none"],
                     help="Which videos to save: 'all' (sensor + viewport), 'viewport' only, 'sensor' only, or 'none' (default: all)")
+parser.add_argument("--randomize-background", "--randomize_background", action="store_true",
+                    help="Sample a random non-default background per task at registration time. "
+                         "Each registered env gets one fixed background; the chosen texture is "
+                         "recorded in the per-task env_cfg.json.")
+parser.add_argument("--background-seed", "--background_seed", type=int, default=None,
+                    help="Seed for reproducible per-task background sampling. Used with --randomize-background.")
 # parse the arguments
 args_cli, _= parser.parse_known_args()
 args_cli.enable_cameras = True
@@ -91,7 +111,6 @@ simulation_app = app_launcher.app
 from robolab.constants import PACKAGE_DIR, set_output_dir # noqa
 from robolab.core.environments.runtime import create_env # noqa
 from robolab.eval import create_client, run_episode, summarize_run # noqa
-from robolab.core.logging.recorder_manager import patch_recorder_manager # noqa
 from robolab.core.environments.factory import get_envs # noqa
 from robolab.core.utils.print_utils import print_experiment_summary # noqa
 from robolab.core.logging.results import check_all_episodes_complete, check_run_complete # noqa
@@ -104,12 +123,21 @@ robolab.constants.RECORD_IMAGE_DATA = args_cli.record_image_data
 robolab.constants.VERBOSE = args_cli.enable_verbose
 robolab.constants.DEBUG = args_cli.enable_debug
 
-# Fix recorder manager
-patch_recorder_manager()
-
 # Run automatic factory generation before main
 from robolab.registrations.droid_jointpos.auto_env_registrations import auto_register_droid_envs # noqa
-auto_register_droid_envs(task_dirs=args_cli.task_dirs, task=args_cli.task)
+if args_cli.policy == "dreamzero" and args_cli.dz_cam2 in ("right", "head"):
+    from robolab.registrations.droid_jointpos.camera_presets import WRIST_LEFT_RIGHT_HEAD # noqa
+    auto_register_droid_envs(
+        task_dirs=args_cli.task_dirs, task=args_cli.task, cameras=WRIST_LEFT_RIGHT_HEAD,
+        randomize_background=args_cli.randomize_background,
+        background_seed=args_cli.background_seed,
+    )
+else:
+    auto_register_droid_envs(
+        task_dirs=args_cli.task_dirs, task=args_cli.task,
+        randomize_background=args_cli.randomize_background,
+        background_seed=args_cli.background_seed,
+    )
 
 def main():
     """Main function."""
@@ -172,6 +200,10 @@ def main():
             remote_port=args_cli.remote_port,
             remote_uri=args_cli.remote_uri,
             open_loop_horizon=args_cli.open_loop_horizon,
+            api_token=args_cli.remote_token,
+            binarize_gripper=args_cli.dz_binarize_gripper,
+            resize=args_cli.dz_resize,
+            cam2_source=args_cli.dz_cam2,
         )
 
         for run_idx in range(num_runs):
