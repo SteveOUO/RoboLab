@@ -99,8 +99,6 @@ class SmartWorldDroidJointposClient(InferenceClient):
         self._env_chunk: dict[int, np.ndarray] = {}
         self._env_counter: dict[int, int] = {}
         self._env_step: dict[int, int] = {}
-        self._env_history_steps: dict[int, list[int]] = {}
-        self._env_history_frames: dict[int, list[np.ndarray]] = {}
 
     def clone(self) -> "SmartWorldDroidJointposClient":
         return type(self)(
@@ -115,14 +113,10 @@ class SmartWorldDroidJointposClient(InferenceClient):
             self._env_chunk.clear()
             self._env_counter.clear()
             self._env_step.clear()
-            self._env_history_steps.clear()
-            self._env_history_frames.clear()
             return
         self._env_chunk.pop(env_id, None)
         self._env_counter.pop(env_id, None)
         self._env_step.pop(env_id, None)
-        self._env_history_steps.pop(env_id, None)
-        self._env_history_frames.pop(env_id, None)
 
     def close(self) -> None:
         self.client.close()
@@ -138,15 +132,6 @@ class SmartWorldDroidJointposClient(InferenceClient):
             control_step = self._env_step[env_id]
         else:
             control_step = 0
-        if env_id not in self._env_history_steps:
-            self._env_history_steps[env_id] = []
-        if env_id not in self._env_history_frames:
-            self._env_history_frames[env_id] = []
-        stitched_frame = np.concatenate(
-            [curr_obs["external_image_0"], curr_obs["external_image_1"], curr_obs["wrist_image"]],
-            axis=0,
-        )
-
         needs_query = counter == 0 or counter >= self.open_loop_horizon or env_id not in self._env_chunk
         if needs_query:
             executed_count = counter
@@ -160,8 +145,6 @@ class SmartWorldDroidJointposClient(InferenceClient):
                 "prompt": instruction,
                 "control_step": control_step,
                 "history/executed_action_count": executed_count,
-                "history/step_indices": np.asarray(self._env_history_steps[env_id], dtype=np.int64),
-                "history/stitched_frames": list(self._env_history_frames[env_id]),
             }
             response = self.client.predict_action(request_data)
             actions = np.asarray(response["actions"], dtype=np.float32)
@@ -171,11 +154,6 @@ class SmartWorldDroidJointposClient(InferenceClient):
 
         action = self._env_chunk[env_id][counter].copy()
         self._env_counter[env_id] = counter + 1
-        self._env_history_steps[env_id].append(control_step)
-        self._env_history_frames[env_id].append(stitched_frame)
-        if len(self._env_history_steps[env_id]) > 256:
-            self._env_history_steps[env_id] = self._env_history_steps[env_id][-256:]
-            self._env_history_frames[env_id] = self._env_history_frames[env_id][-256:]
         self._env_step[env_id] = control_step + 1
 
         if action.shape != (8,):
