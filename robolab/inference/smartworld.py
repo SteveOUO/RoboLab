@@ -1,128 +1,44 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: CC-BY-NC-4.0
 
-import msgpack
 import numpy as np
 import torch
-import websockets.sync.client
 
-from robolab.eval.base_client import InferenceClient
+from deployment.model_server.tools.websocket_policy_client import WebsocketClientPolicy
 
-
-class MsgPackNumpy:
-    def pack(self, obj):
-        return msgpack.packb(obj, default=self._encode_numpy)
-
-    def unpack(self, data):
-        return msgpack.unpackb(data, object_hook=self._decode_numpy, strict_map_key=False)
-
-    def _encode_numpy(self, obj):
-        if isinstance(obj, np.ndarray):
-            if obj.dtype.kind in ("V", "O", "c"):
-                raise ValueError(f"Unsupported dtype: {obj.dtype}")
-            return {
-                b"__ndarray__": True,
-                b"data": obj.tobytes(),
-                b"dtype": obj.dtype.str,
-                b"shape": obj.shape,
-            }
-
-        if isinstance(obj, np.generic):
-            return {
-                b"__npgeneric__": True,
-                b"data": obj.item(),
-                b"dtype": obj.dtype.str,
-            }
-
-        return obj
-
-    def _decode_numpy(self, obj):
-        if b"__ndarray__" in obj:
-            return np.ndarray(buffer=obj[b"data"], dtype=np.dtype(obj[b"dtype"]), shape=obj[b"shape"])
-        if b"__npgeneric__" in obj:
-            return np.dtype(obj[b"dtype"]).type(obj[b"data"])
-        return obj
-
-
-class SmartWorldWebsocketClient:
-    def __init__(
-        self,
-        remote_host: str,
-        remote_port: int,
-    ) -> None:
-        self._uri = f"ws://{remote_host}:{remote_port}"
-        self._packer = MsgPackNumpy()
-        self._ws = websockets.sync.client.connect(
-            self._uri,
-            compression=None,
-            max_size=None,
-        )
-        metadata_bytes = self._ws.recv()
-        self._metadata = self._packer.unpack(metadata_bytes)
-        if not isinstance(self._metadata, dict):
-            raise TypeError(f"Expected server metadata dict, got {type(self._metadata)!r}.")
-
-    def get_server_metadata(self) -> dict:
-        return dict(self._metadata)
-
-    def predict_action(self, request: dict) -> dict:
-        self._ws.send(self._packer.pack(request))
-        response = self._packer.unpack(self._ws.recv())
-        if not isinstance(response, dict):
-            raise TypeError(f"Expected server response dict, got {type(response)!r}.")
-        return response
-
-    def close(self) -> None:
-        self._ws.close()
+from .base_client import InferenceClient
 
 
 class SmartWorldDroidJointposClient(InferenceClient):
-    requires_dedicated_env_client = True
-
     def __init__(
         self,
         remote_host: str = "localhost",
         remote_port: int = 7777,
         open_loop_horizon: int = 8,
     ) -> None:
-        self.remote_host = remote_host
-        self.remote_port = int(remote_port)
-        self.open_loop_horizon = int(open_loop_horizon)
-
         print(f"[{self.__class__.__name__}] Awaiting server on {remote_host}:{remote_port}...")
-        self.client = SmartWorldWebsocketClient(
+        self.client = WebsocketClientPolicy(
             remote_host,
             remote_port,
+            ping_interval=300.0,
+            ping_timeout=300.0,
         )
         print(f"[{self.__class__.__name__}] Server metadata: {self.client.get_server_metadata()}")
 
+        self.open_loop_horizon = int(open_loop_horizon)
         self._env_chunk: dict[int, np.ndarray] = {}
         self._env_counter: dict[int, int] = {}
-        self._env_step: dict[int, int] = {}
+        self._env_control_step: dict[int, int] = {}
         self._env_executed_actions: dict[int, list[np.ndarray]] = {}
 
-    def clone(self) -> "SmartWorldDroidJointposClient":
-        return type(self)(
-            remote_host=self.remote_host,
-            remote_port=self.remote_port,
-            open_loop_horizon=self.open_loop_horizon,
-        )
-
-    def reset(self, *, env_id: int | None = None) -> None:
+    def reset(self):
+        self._env_chunk.clear()
+        self._env_counter.clear()
+        self._env_control_step.clear()
+        self._env_executed_actions.clear()
         self.client.predict_action({"reset": True})
-        if env_id is None:
-            self._env_chunk.clear()
-            self._env_counter.clear()
-            self._env_step.clear()
-            self._env_executed_actions.clear()
-            return
-        self._env_chunk.pop(env_id, None)
-        self._env_counter.pop(env_id, None)
-        self._env_step.pop(env_id, None)
-        if env_id in self._env_executed_actions:
-            self._env_executed_actions.pop(env_id)
 
-    def close(self) -> None:
+    def close(self):
         self.client.close()
 
     def infer(self, obs: dict, instruction: str, *, env_id: int = 0) -> dict:
@@ -132,10 +48,7 @@ class SmartWorldDroidJointposClient(InferenceClient):
             counter = self._env_counter[env_id]
         else:
             counter = 0
-        if env_id in self._env_step:
-            control_step = self._env_step[env_id]
-        else:
-            control_step = 0
+        control_step = self._env_control_step.get(env_id, 0)
         if control_step > 0:
             executed_action = np.concatenate([
                 curr_obs["joint_position"].reshape(7),
@@ -144,14 +57,15 @@ class SmartWorldDroidJointposClient(InferenceClient):
             if env_id not in self._env_executed_actions:
                 self._env_executed_actions[env_id] = []
             self._env_executed_actions[env_id].append(executed_action)
+
         needs_query = counter == 0 or counter >= self.open_loop_horizon or env_id not in self._env_chunk
         if needs_query:
             executed_count = counter
-            counter = 0
             if env_id in self._env_executed_actions:
                 executed_actions = self._env_executed_actions[env_id]
             else:
                 executed_actions = []
+            counter = 0
             request_data = {
                 "observation/exterior_image_0_left": curr_obs["external_image_0"],
                 "observation/exterior_image_1_left": curr_obs["external_image_1"],
@@ -173,7 +87,7 @@ class SmartWorldDroidJointposClient(InferenceClient):
 
         action = self._env_chunk[env_id][counter].copy()
         self._env_counter[env_id] = counter + 1
-        self._env_step[env_id] = control_step + 1
+        self._env_control_step[env_id] = control_step + 1
 
         if action.shape != (8,):
             raise ValueError(f"SmartWorld RoboLab client expects 8D action, got shape={action.shape}.")
@@ -181,25 +95,6 @@ class SmartWorldDroidJointposClient(InferenceClient):
 
         viz = np.concatenate([curr_obs["external_image_0"], curr_obs["external_image_1"], curr_obs["wrist_image"]], axis=1)
         return {"action": action, "viz": viz}
-
-    def _pack_request(self, extracted_obs: dict, instruction: str) -> dict:
-        return {
-            "observation/exterior_image_0_left": extracted_obs["external_image_0"],
-            "observation/exterior_image_1_left": extracted_obs["external_image_1"],
-            "observation/wrist_image_left": extracted_obs["wrist_image"],
-            "observation/joint_position": extracted_obs["joint_position"],
-            "observation/gripper_position": extracted_obs["gripper_position"],
-            "prompt": instruction,
-        }
-
-    def _query_server(self, request: dict) -> dict:
-        return self.client.predict_action(request)
-
-    def _unpack_response(self, response: dict) -> np.ndarray:
-        actions = np.asarray(response["actions"], dtype=np.float32)
-        if actions.ndim != 2:
-            raise ValueError(f"SmartWorld server must return action chunk [T,D], got shape={actions.shape}.")
-        return actions
 
     def _extract_observation(self, obs_dict: dict, *, env_id: int = 0) -> dict:
         external_image_0 = self._tensor_image_to_numpy(obs_dict["image_obs"]["external_cam"][env_id])
