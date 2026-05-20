@@ -30,12 +30,14 @@ class SmartWorldDroidJointposClient(InferenceClient):
         self._env_counter: dict[int, int] = {}
         self._env_control_step: dict[int, int] = {}
         self._env_executed_actions: dict[int, list[np.ndarray]] = {}
+        self._env_image_history: dict[int, list[tuple[int, np.ndarray]]] = {}
 
     def reset(self):
         self._env_chunk.clear()
         self._env_counter.clear()
         self._env_control_step.clear()
         self._env_executed_actions.clear()
+        self._env_image_history.clear()
         self.client.predict_action({"reset": True})
 
     def close(self):
@@ -48,7 +50,10 @@ class SmartWorldDroidJointposClient(InferenceClient):
             counter = self._env_counter[env_id]
         else:
             counter = 0
-        control_step = self._env_control_step.get(env_id, 0)
+        if env_id in self._env_control_step:
+            control_step = self._env_control_step[env_id]
+        else:
+            control_step = 0
         if control_step > 0:
             executed_action = np.concatenate([
                 curr_obs["joint_position"].reshape(7),
@@ -58,6 +63,9 @@ class SmartWorldDroidJointposClient(InferenceClient):
                 self._env_executed_actions[env_id] = []
             self._env_executed_actions[env_id].append(executed_action)
 
+        stitched_frame = np.concatenate([curr_obs["external_image_0"], curr_obs["external_image_1"], curr_obs["wrist_image"]], axis=1)
+        if env_id not in self._env_image_history:
+            self._env_image_history[env_id] = []
         needs_query = counter == 0 or counter >= self.open_loop_horizon or env_id not in self._env_chunk
         if needs_query:
             executed_count = counter
@@ -78,12 +86,20 @@ class SmartWorldDroidJointposClient(InferenceClient):
             }
             if len(executed_actions) > 0:
                 request_data["history/executed_actions"] = np.stack(executed_actions, axis=0).astype(np.float32)
+            image_history = self._env_image_history[env_id]
+            if len(image_history) > 0:
+                history_steps, history_frames = zip(*image_history)
+                request_data["history/step_indices"] = np.asarray(history_steps, dtype=np.int64)
+                request_data["history/stitched_frames"] = np.stack(history_frames, axis=0).astype(np.uint8, copy=False)
             response = self.client.predict_action(request_data)
             actions = np.asarray(response["actions"], dtype=np.float32)
             if actions.ndim != 2:
                 raise ValueError(f"SmartWorld server must return action chunk [T,D], got shape={actions.shape}.")
             self._env_chunk[env_id] = actions
             self._env_executed_actions[env_id] = []
+            self._env_image_history[env_id] = []
+        else:
+            self._env_image_history[env_id].append((int(control_step), stitched_frame.copy()))
 
         action = self._env_chunk[env_id][counter].copy()
         self._env_counter[env_id] = counter + 1
@@ -93,8 +109,7 @@ class SmartWorldDroidJointposClient(InferenceClient):
             raise ValueError(f"SmartWorld RoboLab client expects 8D action, got shape={action.shape}.")
         action[-1] = 1.0 if action[-1] > 0.5 else 0.0
 
-        viz = np.concatenate([curr_obs["external_image_0"], curr_obs["external_image_1"], curr_obs["wrist_image"]], axis=1)
-        return {"action": action, "viz": viz}
+        return {"action": action, "viz": stitched_frame}
 
     def _extract_observation(self, obs_dict: dict, *, env_id: int = 0) -> dict:
         external_image_0 = self._tensor_image_to_numpy(obs_dict["image_obs"]["external_cam"][env_id])
