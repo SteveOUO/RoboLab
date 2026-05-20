@@ -69,6 +69,10 @@ parser.add_argument("--remote-host", "--remote_host", type=str, default="localho
                        help="Remote host for policy server (default: localhost)")
 parser.add_argument("--remote-port", "--remote_port", type=int, default=8000,
                        help="Remote port for policy server (default: 8000)")
+parser.add_argument("--openpi-action-mode", "--openpi_action_mode", type=str, default="joint_velocity", choices=["joint_velocity", "joint_position"],
+                       help="OpenPI DROID action semantics. Use joint_velocity for pi05_droid, joint_position for jointpos checkpoints.")
+parser.add_argument("--openpi-control-dt", "--openpi_control_dt", type=float, default=1.0 / 15.0,
+                       help="Control dt used to integrate OpenPI joint_velocity actions into joint-position targets.")
 parser.add_argument("--remote-uri", "--remote_uri", type=str, default=None,
                        help="Full WebSocket URI for policy server, e.g. wss://host.lepton.run. "
                             "Overrides --remote-host and --remote-port when set.")
@@ -200,6 +204,8 @@ def main():
             remote_port=args_cli.remote_port,
             remote_uri=args_cli.remote_uri,
             open_loop_horizon=args_cli.open_loop_horizon,
+            openpi_action_mode=args_cli.openpi_action_mode,
+            openpi_control_dt=args_cli.openpi_control_dt,
             api_token=args_cli.remote_token,
             binarize_gripper=args_cli.dz_binarize_gripper,
             resize=args_cli.dz_resize,

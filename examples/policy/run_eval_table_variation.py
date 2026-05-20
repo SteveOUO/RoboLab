@@ -50,6 +50,10 @@ parser.add_argument("--remote-host", "--remote_host", type=str, default="localho
                        help="Remote host for policy server (default: localhost)")
 parser.add_argument("--remote-port", "--remote_port", type=int, default=8000,
                        help="Remote port for policy server (default: 8000)")
+parser.add_argument("--openpi-action-mode", "--openpi_action_mode", type=str, default="joint_velocity", choices=["joint_velocity", "joint_position"],
+                       help="OpenPI DROID action semantics. Use joint_velocity for pi05_droid, joint_position for jointpos checkpoints.")
+parser.add_argument("--openpi-control-dt", "--openpi_control_dt", type=float, default=1.0 / 15.0,
+                       help="Control dt used to integrate OpenPI joint_velocity actions into joint-position targets.")
 args_cli, _= parser.parse_known_args()
 args_cli.enable_cameras = True
 args_cli.save_videos = True
@@ -195,6 +199,8 @@ def main():
             args_cli.policy,
             remote_host=args_cli.remote_host,
             remote_port=args_cli.remote_port,
+            openpi_action_mode=args_cli.openpi_action_mode,
+            openpi_control_dt=args_cli.openpi_control_dt,
         )
 
         for run_idx in range(num_runs):

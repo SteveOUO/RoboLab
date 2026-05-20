@@ -23,7 +23,6 @@ class Pi0DroidJointposClient(InferenceClient):
         "paligemma_fast": 10,
         "pi05": 15,
     }
-    FALLBACK_HORIZON: int = 15
 
     def __init__(
         self,
@@ -32,12 +31,17 @@ class Pi0DroidJointposClient(InferenceClient):
         open_loop_horizon: int | None = None,
         remote_uri: str | None = None,
         policy_variant: str = "pi05",
+        openpi_action_mode: str = "joint_velocity",
+        openpi_control_dt: float = 1.0 / 15.0,
     ) -> None:
         super().__init__()
         if open_loop_horizon is None:
-            open_loop_horizon = self.DEFAULT_HORIZONS.get(policy_variant, self.FALLBACK_HORIZON)
+            open_loop_horizon = self.DEFAULT_HORIZONS[policy_variant]
         self.open_loop_horizon = int(open_loop_horizon)
         self.policy_variant = policy_variant
+        self.openpi_action_mode = openpi_action_mode
+        self.openpi_control_dt = float(openpi_control_dt)
+        self._request_joint_position: np.ndarray | None = None
         self._remote_uri = remote_uri
         self._remote_host = remote_host
         self._remote_port = remote_port
@@ -84,6 +88,7 @@ class Pi0DroidJointposClient(InferenceClient):
         robot_state = raw_obs["proprio_obs"]
         joint_position = robot_state["arm_joint_pos"][env_id].clone().detach().cpu().numpy()
         gripper_position = robot_state["gripper_pos"][env_id].clone().detach().cpu().numpy()
+        self._request_joint_position = np.asarray(joint_position, dtype=np.float32).reshape(1, 7)
 
         return {
             "right_image": right_image,
@@ -109,7 +114,17 @@ class Pi0DroidJointposClient(InferenceClient):
         return self._infer_with_retry(request)
 
     def _unpack_response(self, response: dict) -> np.ndarray:
-        return np.asarray(response["actions"])
+        actions = np.asarray(response["actions"], dtype=np.float32)
+        if self.openpi_action_mode == "joint_position":
+            return actions
+        if self.openpi_action_mode != "joint_velocity":
+            raise ValueError(f"Unsupported openpi_action_mode={self.openpi_action_mode!r}.")
+        if self._request_joint_position is None:
+            raise RuntimeError("Missing joint position for OpenPI joint-velocity conversion.")
+        converted = actions.copy()
+        joint_velocity = converted[:, :7]
+        converted[:, :7] = self._request_joint_position + np.cumsum(joint_velocity, axis=0) * self.openpi_control_dt
+        return converted
 
     # ---- optional hooks -----------------------------------------------
 
