@@ -5,6 +5,7 @@ import msgpack
 import numpy as np
 import torch
 import websockets.sync.client
+from PIL import Image
 
 from robolab.eval.base_client import InferenceClient
 
@@ -88,6 +89,8 @@ class SmartWorldDroidJointposClient(InferenceClient):
         self.remote_host = remote_host
         self.remote_port = int(remote_port)
         self.open_loop_horizon = int(open_loop_horizon)
+        self.image_height = 180
+        self.image_width = 320
 
         print(f"[{self.__class__.__name__}] Awaiting server on {remote_host}:{remote_port}...")
         self.client = SmartWorldWebsocketClient(
@@ -153,9 +156,15 @@ class SmartWorldDroidJointposClient(InferenceClient):
             else:
                 executed_actions = []
             request_data = {
-                "observation/exterior_image_0_left": curr_obs["external_image_0"],
-                "observation/exterior_image_1_left": curr_obs["external_image_1"],
-                "observation/wrist_image_left": curr_obs["wrist_image"],
+                "observation/exterior_image_0_left": self._resize_image(
+                    curr_obs["external_image_0"], self.image_height, self.image_width
+                ),
+                "observation/exterior_image_1_left": self._resize_image(
+                    curr_obs["external_image_1"], self.image_height, self.image_width
+                ),
+                "observation/wrist_image_left": self._resize_image(
+                    curr_obs["wrist_image"], self.image_height, self.image_width
+                ),
                 "observation/joint_position": curr_obs["joint_position"],
                 "observation/gripper_position": curr_obs["gripper_position"],
                 "prompt": instruction,
@@ -179,7 +188,12 @@ class SmartWorldDroidJointposClient(InferenceClient):
             raise ValueError(f"SmartWorld RoboLab client expects 8D action, got shape={action.shape}.")
         action[-1] = 1.0 if action[-1] > 0.5 else 0.0
 
-        viz = np.concatenate([curr_obs["external_image_0"], curr_obs["external_image_1"], curr_obs["wrist_image"]], axis=1)
+        viz_images = [
+            self._resize_image(curr_obs["external_image_0"], self.image_height, self.image_width),
+            self._resize_image(curr_obs["wrist_image"], self.image_height, self.image_width),
+            self._resize_image(curr_obs["external_image_1"], self.image_height, self.image_width),
+        ]
+        viz = np.concatenate(viz_images, axis=1)
         return {"action": action, "viz": viz}
 
     def _pack_request(self, extracted_obs: dict, instruction: str) -> dict:
@@ -201,10 +215,25 @@ class SmartWorldDroidJointposClient(InferenceClient):
             raise ValueError(f"SmartWorld server must return action chunk [T,D], got shape={actions.shape}.")
         return actions
 
+    @staticmethod
+    def _resize_image(image: np.ndarray, target_height: int, target_width: int) -> np.ndarray:
+        if int(image.shape[0]) == int(target_height) and int(image.shape[1]) == int(target_width):
+            return image
+        return np.asarray(Image.fromarray(image).resize((target_width, int(target_height))))
+
     def _extract_observation(self, obs_dict: dict, *, env_id: int = 0) -> dict:
-        external_image_0 = self._tensor_image_to_numpy(obs_dict["image_obs"]["external_cam"][env_id])
-        external_image_1 = self._tensor_image_to_numpy(obs_dict["image_obs"]["external_cam_2"][env_id])
-        wrist_image = self._tensor_image_to_numpy(obs_dict["image_obs"]["wrist_cam"][env_id])
+        image_obs = obs_dict["image_obs"]
+        required_image_keys = ("over_shoulder_left_camera", "over_shoulder_right_camera", "wrist_cam")
+        missing_image_keys = [key for key in required_image_keys if key not in image_obs]
+        if missing_image_keys:
+            raise KeyError(
+                "SmartWorld requires DROID left/right/wrist cameras; "
+                f"missing={missing_image_keys}, available={list(image_obs)}."
+            )
+
+        external_image_0 = self._tensor_image_to_numpy(image_obs["over_shoulder_left_camera"][env_id])
+        external_image_1 = self._tensor_image_to_numpy(image_obs["over_shoulder_right_camera"][env_id])
+        wrist_image = self._tensor_image_to_numpy(image_obs["wrist_cam"][env_id])
 
         robot_state = obs_dict["proprio_obs"]
         joint_position = robot_state["arm_joint_pos"][env_id].clone().detach().cpu().numpy().astype(np.float32)
