@@ -129,19 +129,21 @@ robolab.constants.DEBUG = args_cli.enable_debug
 
 # Run automatic factory generation before main
 from robolab.registrations.droid_jointpos.auto_env_registrations import auto_register_droid_envs # noqa
-if args_cli.policy == "dreamzero" and args_cli.dz_cam2 in ("right", "head"):
+registration_kwargs = {
+    "task_dirs": args_cli.task_dirs,
+    "task": args_cli.task,
+    "randomize_background": args_cli.randomize_background,
+    "background_seed": args_cli.background_seed,
+}
+
+if args_cli.policy == "smartworld":
+    from robolab.registrations.droid_jointpos.camera_presets import WRIST_LEFT_RIGHT # noqa
+    registration_kwargs["cameras"] = WRIST_LEFT_RIGHT
+elif args_cli.policy == "dreamzero" and args_cli.dz_cam2 in ("right", "head"):
     from robolab.registrations.droid_jointpos.camera_presets import WRIST_LEFT_RIGHT_HEAD # noqa
-    auto_register_droid_envs(
-        task_dirs=args_cli.task_dirs, task=args_cli.task, cameras=WRIST_LEFT_RIGHT_HEAD,
-        randomize_background=args_cli.randomize_background,
-        background_seed=args_cli.background_seed,
-    )
-else:
-    auto_register_droid_envs(
-        task_dirs=args_cli.task_dirs, task=args_cli.task,
-        randomize_background=args_cli.randomize_background,
-        background_seed=args_cli.background_seed,
-    )
+    registration_kwargs["cameras"] = WRIST_LEFT_RIGHT_HEAD
+
+auto_register_droid_envs(**registration_kwargs)
 
 def main():
     """Main function."""
