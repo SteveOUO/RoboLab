@@ -236,9 +236,10 @@ class DreamZeroClient(InferenceClient):
             session_ids = [self._env_session_id[env_id]]
         else:
             session_ids = []
+        reset_session_ids = None if env_id is None else session_ids
         self._send_recv(self._packer.pack({
             "endpoint": "reset",
-            "session_ids": session_ids or None,
+            "session_ids": reset_session_ids,
         }))
         if env_id is None:
             self._env_session_id.clear()

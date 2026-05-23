@@ -112,8 +112,8 @@ class SmartWorldDroidJointposClient(InferenceClient):
         return {"action": action, "viz": stitched_frame}
 
     def _extract_observation(self, obs_dict: dict, *, env_id: int = 0) -> dict:
-        external_image_0 = self._tensor_image_to_numpy(obs_dict["image_obs"]["external_cam"][env_id])
-        external_image_1 = self._tensor_image_to_numpy(obs_dict["image_obs"]["external_cam_2"][env_id])
+        external_image_0 = self._tensor_image_to_numpy(obs_dict["image_obs"]["over_shoulder_left_camera"][env_id])
+        external_image_1 = self._tensor_image_to_numpy(obs_dict["image_obs"]["over_shoulder_right_camera"][env_id])
         wrist_image = self._tensor_image_to_numpy(obs_dict["image_obs"]["wrist_cam"][env_id])
 
         robot_state = obs_dict["proprio_obs"]

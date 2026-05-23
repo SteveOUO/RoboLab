@@ -18,18 +18,18 @@ class ImageObsCfg(ObsGroup):
     # gripper_pos = ObsTerm(
     #     func=gripper_pos, noise=noise.GaussianNoiseCfg(std=0.05), clip=(0, 1)
     # )
-    external_cam = ObsTerm(
+    over_shoulder_left_camera = ObsTerm(
             func=mdp.observations.image,
             params={
-                "sensor_cfg": SceneEntityCfg("external_cam"),
+                "sensor_cfg": SceneEntityCfg("over_shoulder_left_camera"),
                 "data_type": "rgb",
                 "normalize": False,
                 }
             )
-    external_cam_2 = ObsTerm(
+    over_shoulder_right_camera = ObsTerm(
             func=mdp.observations.image,
             params={
-                "sensor_cfg": SceneEntityCfg("external_cam_2"),
+                "sensor_cfg": SceneEntityCfg("over_shoulder_right_camera"),
                 "data_type": "rgb",
                 "normalize": False,
                 }
