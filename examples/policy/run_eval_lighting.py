@@ -171,6 +171,7 @@ def main():
             remote_port=args_cli.remote_port,
             openpi_action_mode=args_cli.openpi_action_mode,
             openpi_control_dt=args_cli.openpi_control_dt,
+            experiment_name=args_cli.output_folder_name,
         )
 
         for run_idx in range(num_runs):

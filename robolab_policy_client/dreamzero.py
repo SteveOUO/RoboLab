@@ -88,6 +88,8 @@ class MsgPackNumpy:
 
 
 class DreamZeroClient(InferenceClient):
+    requires_dedicated_env_client = True
+
     """Inference client for DreamZero VAM model.
 
     DreamZero uses the roboarena WebSocket protocol with:
@@ -120,6 +122,7 @@ class DreamZeroClient(InferenceClient):
         self.binarize_gripper = binarize_gripper
         self.resize = resize
         self.cam2_source = cam2_source
+        self.api_token = api_token
 
         # Auth: explicit param takes priority, then env var, then no auth
         token = api_token or os.environ.get("DREAMZERO_API_TOKEN")
@@ -225,6 +228,20 @@ class DreamZeroClient(InferenceClient):
         return np.concatenate([left, wrist], axis=1)
 
     # ---- lifecycle overrides ------------------------------------------
+
+    def clone(self) -> "DreamZeroClient":
+        return type(self)(
+            remote_host=self.host,
+            remote_port=self.port,
+            open_loop_horizon=self.open_loop_horizon,
+            image_height=self.image_height,
+            image_width=self.image_width,
+            remote_uri=self._uri,
+            api_token=self.api_token,
+            binarize_gripper=self.binarize_gripper,
+            resize=self.resize,
+            cam2_source=self.cam2_source,
+        )
 
     def reset(self, *, env_id: int | None = None) -> None:
         """Notify server, clear per-env session ids, then clear chunk state."""

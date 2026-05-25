@@ -212,6 +212,7 @@ def main():
             binarize_gripper=args_cli.dz_binarize_gripper,
             resize=args_cli.dz_resize,
             cam2_source=args_cli.dz_cam2,
+            experiment_name=args_cli.output_folder_name,
         )
 
         for run_idx in range(num_runs):

@@ -14,7 +14,7 @@ class SmartWorldDroidJointposClient(InferenceClient):
         self,
         remote_host: str = "localhost",
         remote_port: int = 7777,
-        open_loop_horizon: int = 8,
+        open_loop_horizon: int | None = None,
     ) -> None:
         print(f"[{self.__class__.__name__}] Awaiting server on {remote_host}:{remote_port}...")
         self.client = WebsocketClientPolicy(
@@ -25,12 +25,12 @@ class SmartWorldDroidJointposClient(InferenceClient):
         )
         print(f"[{self.__class__.__name__}] Server metadata: {self.client.get_server_metadata()}")
 
-        self.open_loop_horizon = int(open_loop_horizon)
+        self.open_loop_horizon = None if open_loop_horizon is None else int(open_loop_horizon)
         self._env_chunk: dict[int, np.ndarray] = {}
         self._env_counter: dict[int, int] = {}
         self._env_control_step: dict[int, int] = {}
         self._env_executed_actions: dict[int, list[np.ndarray]] = {}
-        self._env_image_history: dict[int, list[tuple[int, np.ndarray]]] = {}
+        self._env_image_history: dict[int, list[tuple[int, dict[str, np.ndarray]]]] = {}
 
     def reset(self):
         self._env_chunk.clear()
@@ -63,10 +63,19 @@ class SmartWorldDroidJointposClient(InferenceClient):
                 self._env_executed_actions[env_id] = []
             self._env_executed_actions[env_id].append(executed_action)
 
+        history_views = {
+            "observation/exterior_image_0_left": curr_obs["external_image_0"],
+            "observation/exterior_image_1_left": curr_obs["external_image_1"],
+            "observation/wrist_image_left": curr_obs["wrist_image"],
+        }
         stitched_frame = np.concatenate([curr_obs["external_image_0"], curr_obs["external_image_1"], curr_obs["wrist_image"]], axis=1)
         if env_id not in self._env_image_history:
             self._env_image_history[env_id] = []
-        needs_query = counter == 0 or counter >= self.open_loop_horizon or env_id not in self._env_chunk
+        needs_query = counter == 0 or env_id not in self._env_chunk
+        if not needs_query:
+            chunk_horizon = int(self._env_chunk[env_id].shape[0])
+            refresh_horizon = chunk_horizon if self.open_loop_horizon is None else min(self.open_loop_horizon, chunk_horizon)
+            needs_query = counter >= refresh_horizon
         if needs_query:
             executed_count = counter
             if env_id in self._env_executed_actions:
@@ -88,9 +97,13 @@ class SmartWorldDroidJointposClient(InferenceClient):
                 request_data["history/executed_actions"] = np.stack(executed_actions, axis=0).astype(np.float32)
             image_history = self._env_image_history[env_id]
             if len(image_history) > 0:
-                history_steps, history_frames = zip(*image_history)
+                history_steps, history_view_dicts = zip(*image_history)
                 request_data["history/step_indices"] = np.asarray(history_steps, dtype=np.int64)
-                request_data["history/stitched_frames"] = np.stack(history_frames, axis=0).astype(np.uint8, copy=False)
+                for request_key in history_views:
+                    request_data[f"history/{request_key}"] = np.stack(
+                        [view_dict[request_key] for view_dict in history_view_dicts],
+                        axis=0,
+                    ).astype(np.uint8, copy=False)
             response = self.client.predict_action(request_data)
             actions = np.asarray(response["actions"], dtype=np.float32)
             if actions.ndim != 2:
@@ -99,7 +112,12 @@ class SmartWorldDroidJointposClient(InferenceClient):
             self._env_executed_actions[env_id] = []
             self._env_image_history[env_id] = []
         else:
-            self._env_image_history[env_id].append((int(control_step), stitched_frame.copy()))
+            self._env_image_history[env_id].append(
+                (
+                    int(control_step),
+                    {key: value.copy() for key, value in history_views.items()},
+                )
+            )
 
         action = self._env_chunk[env_id][counter].copy()
         self._env_counter[env_id] = counter + 1

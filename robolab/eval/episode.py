@@ -118,6 +118,8 @@ def run_episode(env, env_cfg, episode, client: InferenceClient | Sequence[Infere
     subtask_status = []
 
     clients, created_clients = _clients_for_envs(client, env.num_envs)
+    for policy_client in _unique_clients(clients):
+        policy_client.reset()
 
     # Set up per-run HDF5 file and per-env demo indices
     if env.recorder_manager is not None and hasattr(env.recorder_manager, 'set_hdf5_file'):
@@ -205,11 +207,6 @@ def run_episode(env, env_cfg, episode, client: InferenceClient | Sequence[Infere
                 vw.release()
             except Exception:
                 logger.exception("Failed to release video writer")
-        try:
-            for policy_client in _unique_clients(clients):
-                policy_client.reset()
-        except Exception:
-            logger.exception("Failed to reset client after episode")
         for policy_client in created_clients:
             try:
                 policy_client.close()
