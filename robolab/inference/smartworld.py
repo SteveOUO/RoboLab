@@ -23,9 +23,17 @@ class SmartWorldDroidJointposClient(InferenceClient):
             ping_interval=300.0,
             ping_timeout=300.0,
         )
-        print(f"[{self.__class__.__name__}] Server metadata: {self.client.get_server_metadata()}")
-
         self.open_loop_horizon = None if open_loop_horizon is None else int(open_loop_horizon)
+        self._server_metadata = self.client.get_server_metadata()
+        print(f"[{self.__class__.__name__}] Server metadata: {self._server_metadata}")
+        if bool(self._server_metadata.get("causal_action_rollout")) and self.open_loop_horizon is not None:
+            causal_chunk_len = int(self._server_metadata.get("causal_action_chunk_len") or 0)
+            if causal_chunk_len > 0 and int(self.open_loop_horizon) < causal_chunk_len:
+                raise ValueError(
+                    "SmartWorld causal rollout requires consuming a full causal action chunk before re-querying. "
+                    f"Got open_loop_horizon={self.open_loop_horizon}, causal_action_chunk_len={causal_chunk_len}."
+                )
+
         self._env_chunk: dict[int, np.ndarray] = {}
         self._env_counter: dict[int, int] = {}
         self._env_control_step: dict[int, int] = {}
