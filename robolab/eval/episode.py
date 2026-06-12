@@ -39,13 +39,22 @@ class TimingStats:
             self.times[name].append(elapsed)
             del self._start_times[name]
 
+    def add(self, name: str, elapsed: float):
+        self.times[name].append(float(elapsed))
+
     def to_dict(self, num_steps: int) -> dict:
         """Return timing summary as a dict for results logging."""
         d = {}
         for name, times in self.times.items():
             d[f"{name}_s"] = round(sum(times), 3)
             d[f"{name}_avg_ms"] = round(sum(times) / len(times) * 1000, 1) if times else 0
-        d["wall_total_s"] = round(sum(sum(t) for t in self.times.values()), 3)
+        nested_timing_names = {"action_tensor_build"}
+        top_level_times = [
+            times
+            for name, times in self.times.items()
+            if name not in nested_timing_names and not name.startswith("smartworld_")
+        ]
+        d["wall_total_s"] = round(sum(sum(t) for t in top_level_times), 3)
         d["it_per_sec"] = round(num_steps / d["wall_total_s"], 2) if d["wall_total_s"] > 0 else 0
         return d
 
@@ -162,7 +171,13 @@ def run_episode(env, env_cfg, episode, client: InferenceClient | Sequence[Infere
             last_viz = None
             for env_id in env.active_env_ids:
                 ret = clients[env_id].infer(obs, instruction, env_id=env_id)
-                actions[env_id] = torch.tensor(ret["action"], device=env.device)
+                consume_profile_sections = getattr(clients[env_id], "consume_profile_sections", None)
+                if callable(consume_profile_sections):
+                    for section_name, elapsed in consume_profile_sections():
+                        timer.add(section_name, elapsed)
+                timer.start("action_tensor_build")
+                actions[env_id] = torch.as_tensor(ret["action"], device=env.device)
+                timer.stop("action_tensor_build")
                 if env_id == 0 or last_viz is None:
                     last_viz = ret.get("viz")
             timer.stop("policy_inference")

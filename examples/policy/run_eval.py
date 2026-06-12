@@ -37,7 +37,8 @@ import os
 import traceback
 import sys
 from isaaclab.app import AppLauncher
-from robolab.constants import get_timestamp, DEFAULT_TASK_SUBFOLDERS # noqa
+from robolab.constants import DEFAULT_TASK_SUBFOLDERS # noqa
+from robolab.core.logging.run_paths import default_run_name, install_client_log, resolve_output_dir, utc8_now # noqa
 
 # add argparse arguments
 parser = argparse.ArgumentParser(description="")
@@ -109,16 +110,24 @@ parser.add_argument("--background-seed", "--background_seed", type=int, default=
 args_cli, _= parser.parse_known_args()
 args_cli.enable_cameras = True
 args_cli.save_videos = args_cli.video_mode != "none"
+if args_cli.output_folder_name is None:
+    args_cli.output_folder_name = default_run_name(
+        args_cli.policy,
+        instruction_type=args_cli.instruction_type,
+    )
+eval_started_at = utc8_now()
+install_client_log(args_cli.output_folder_name)
 app_launcher = AppLauncher(args_cli)
 simulation_app = app_launcher.app
 
-from robolab.constants import PACKAGE_DIR, set_output_dir # noqa
+from robolab.constants import set_output_dir # noqa
 from robolab.core.environments.runtime import create_env # noqa
 from robolab.eval import create_client, run_episode, summarize_run # noqa
 from robolab.core.environments.factory import get_envs # noqa
 from robolab.core.utils.print_utils import print_experiment_summary # noqa
 from robolab.core.logging.results import check_all_episodes_complete, check_run_complete # noqa
 from robolab.core.logging.results import init_experiment, summarize_experiment_results # noqa
+from robolab.core.logging.result_summary import build_result_summary, write_result_yaml # noqa
 import robolab.constants # noqa
 
 # Update robolab.constants module settings from command line arguments
@@ -147,12 +156,7 @@ auto_register_droid_envs(**registration_kwargs)
 
 def main():
     """Main function."""
-    if args_cli.output_folder_name is None:
-        args_cli.output_folder_name = get_timestamp() + f"_{args_cli.policy}"
-        if args_cli.instruction_type != "default":
-            args_cli.output_folder_name += f"_{args_cli.instruction_type}"
-
-    output_dir = os.path.join(PACKAGE_DIR, "output", args_cli.output_folder_name)
+    output_dir = str(resolve_output_dir(args_cli.output_folder_name))
     os.makedirs(output_dir, exist_ok=True)
 
     if args_cli.task:
@@ -213,6 +217,7 @@ def main():
             resize=args_cli.dz_resize,
             cam2_source=args_cli.dz_cam2,
             experiment_name=args_cli.output_folder_name,
+            return_viz=not args_cli.headless,
         )
 
         for run_idx in range(num_runs):
@@ -264,6 +269,15 @@ def main():
     # This will print the results to the terminal, summarized.
     # Alternatively, you can run `python analysis/read_results.py <output_dir>` to read the results from the file.
     summarize_experiment_results(episode_results, show_timing=True)
+    result_summary = build_result_summary(
+        episode_results=episode_results,
+        output_dir=output_dir,
+        run_name=args_cli.output_folder_name,
+        args=args_cli,
+        started_at=eval_started_at,
+        filter_str=filter_str,
+    )
+    write_result_yaml(result_summary)
 
     simulation_app.close()
 
