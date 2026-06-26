@@ -83,6 +83,9 @@ class LeRobotExporter:
         fps: float = 15.0,
         repo_id: str | None = None,
         concatenate_videos: bool = True,
+        success_only: bool = False,
+        require_complete_videos: bool = False,
+        required_cameras: list[str] | tuple[str, ...] | None = None,
     ):
         """Initialize the LeRobot exporter.
 
@@ -97,6 +100,9 @@ class LeRobotExporter:
             concatenate_videos: If True (default), merge all episode videos per camera
                 into one MP4 (v3 convention). If False, write one MP4 per episode
                 (file-000.mp4, file-001.mp4, ...); still v3, no ffmpeg needed.
+            success_only: If True, export only demos whose HDF5 success attr is True.
+            require_complete_videos: If True, skip demos without all required camera MP4s.
+            required_cameras: Camera names required when require_complete_videos is True.
         """
         if not HAS_PYARROW:
             raise ImportError(
@@ -111,6 +117,9 @@ class LeRobotExporter:
         self.fps = fps
         self.repo_id = repo_id or f"robolab/{self.robolab_dir.name}"
         self.concatenate_videos = concatenate_videos
+        self.success_only = success_only
+        self.require_complete_videos = require_complete_videos
+        self.required_cameras = tuple(required_cameras or ())
 
         # Statistics accumulators
         self._stats: dict[str, dict[str, list]] = {}
@@ -155,6 +164,7 @@ class LeRobotExporter:
         self._build_concatenated_videos()
         self._write_episodes_metadata()
         self._write_tasks()
+        self._write_modality()
         self._write_stats()
         self._write_info()
 
@@ -228,6 +238,12 @@ class LeRobotExporter:
 
             for demo_name in demo_names:
                 demo_group = data_group[demo_name]
+                if self.success_only and not bool(demo_group.attrs.get("success", False)):
+                    continue
+                if self.require_complete_videos and not self._has_required_episode_videos(
+                    task_dir, demo_name, run_idx=run_idx
+                ):
+                    continue
                 episode_idx = len(self._episodes_metadata)
 
                 # Extract episode data
@@ -238,11 +254,14 @@ class LeRobotExporter:
                     self._find_episode_videos(task_dir, episode_idx, demo_name, run_idx=run_idx)
 
                     # Get task info
-                    task_idx = self._get_or_create_task(task_name)
+                    task_idx = self._get_or_create_task(task_name, task_dir=task_dir)
 
                     # Add episode metadata (tasks = instruction list, for compatibility with HF/LeRobot visualizer)
                     num_frames = len(episode_data)
-                    instruction = self._tasks[task_idx]["task"]
+                    task_entry = self._tasks[task_idx]
+                    instruction = task_entry["task"]
+                    instruction_2 = task_entry.get("instruction_2", instruction)
+                    instruction_3 = task_entry.get("instruction_3", instruction)
                     self._episodes_metadata.append({
                         "episode_index": episode_idx,
                         "data/chunk_index": 0,
@@ -262,6 +281,9 @@ class LeRobotExporter:
                         row["frame_index"] = frame_idx
                         row["index"] = self._current_index
                         row["task_index"] = task_idx
+                        row["language_instruction"] = instruction
+                        row["language_instruction_2"] = instruction_2
+                        row["language_instruction_3"] = instruction_3
                         row["timestamp"] = frame_idx / self.fps
                         # LeRobot v3: next.done = True on last frame of episode (for visualizer)
                         row["next.done"] = frame_idx == num_frames_ep - 1
@@ -336,22 +358,95 @@ class LeRobotExporter:
 
         return rows
 
-    def _get_instruction_for_task(self, task_name: str) -> str:
-        """Get or generate a language instruction for a task.
+    @staticmethod
+    def _is_placeholder_instruction(instruction: str | None) -> bool:
+        if instruction is None:
+            return True
+        value = str(instruction).strip()
+        return value == "" or value.lower() in {
+            "default task",
+            "default instruction",
+            "task",
+            "instruction",
+        }
 
-        First checks episode_results.json, then generates from task name.
-        """
-        # Try to load from episode results (supports .jsonl and legacy .json)
-        from robolab.core.logging.results import load_episode_results
-        results = load_episode_results(str(self.robolab_dir))
-        for result in results:
-            if result.get("task") == task_name and "instruction" in result:
-                return result["instruction"]
-
-        # Generate from task name (convert CamelCase to sentence)
+    def _instruction_from_task_name(self, task_name: str) -> str:
         import re
+
         words = re.findall(r'[A-Z][a-z]*|[a-z]+', task_name.replace("Task", ""))
         return " ".join(words).lower().capitalize()
+
+    def _task_metadata_by_name(self) -> dict[str, dict]:
+        if hasattr(self, "_task_metadata_cache"):
+            return self._task_metadata_cache
+        metadata_path = Path(__file__).resolve().parents[2] / "tasks" / "_metadata" / "task_metadata.json"
+        metadata: dict[str, dict] = {}
+        if metadata_path.exists():
+            try:
+                entries = json.loads(metadata_path.read_text())
+                if isinstance(entries, list):
+                    for entry in entries:
+                        if isinstance(entry, dict) and entry.get("task_name"):
+                            metadata[str(entry["task_name"])] = entry
+            except (OSError, json.JSONDecodeError):
+                metadata = {}
+        self._task_metadata_cache = metadata
+        return metadata
+
+    def _get_instruction_variants_for_task(self, task_name: str, task_dir: Path | None = None) -> dict[str, str]:
+        """Resolve RoboLab task instructions from task metadata.
+
+        Training exports should use the task's canonical instruction variants,
+        independent of which instruction type was used by a particular eval run.
+        """
+        metadata = self._task_metadata_by_name().get(task_name, {})
+        variants: dict[str, str] = {}
+
+        if isinstance(metadata.get("instruction_variants"), dict):
+            variants.update({str(k): str(v) for k, v in metadata["instruction_variants"].items() if v})
+        if metadata.get("instruction") and "default" not in variants:
+            variants["default"] = str(metadata["instruction"])
+
+        if not variants and task_dir is not None:
+            env_cfg_path = task_dir / "env_cfg.json"
+            if env_cfg_path.exists():
+                try:
+                    env_cfg = json.loads(env_cfg_path.read_text())
+                    env_variants = env_cfg.get("_instruction_variants")
+                    if isinstance(env_variants, dict):
+                        variants.update({str(k): str(v) for k, v in env_variants.items() if v})
+                    env_instruction = env_cfg.get("instruction")
+                    if not self._is_placeholder_instruction(env_instruction):
+                        variants.setdefault("default", str(env_instruction).strip())
+                except (OSError, json.JSONDecodeError):
+                    pass
+
+        if not variants:
+            from robolab.core.logging.results import load_episode_results
+
+            try:
+                results = load_episode_results(str(task_dir or self.robolab_dir))
+            except Exception:
+                results = []
+            for result in results:
+                if result.get("task") == task_name and "instruction" in result:
+                    result_instruction = str(result["instruction"]).strip()
+                    if not self._is_placeholder_instruction(result_instruction):
+                        variants["default"] = result_instruction
+                        break
+
+        default_instruction = variants.get("default")
+        if self._is_placeholder_instruction(default_instruction):
+            default_instruction = self._instruction_from_task_name(task_name)
+        vague_instruction = variants.get("vague") or default_instruction
+        specific_instruction = variants.get("specific") or default_instruction
+
+        return {
+            "primary": str(default_instruction),
+            "default": str(default_instruction),
+            "vague": str(vague_instruction),
+            "specific": str(specific_instruction),
+        }
 
     def _load_camera_info_from_env_cfg(self, task_dir: Path) -> dict[str, dict]:
         """Load camera metadata from env_cfg.json if available.
@@ -379,6 +474,29 @@ class LeRobotExporter:
             return cameras
         except (json.JSONDecodeError, KeyError):
             return {}
+
+    def _episode_camera_video_paths(self, task_dir: Path, demo_name: str, run_idx: int | None = None) -> dict[str, Path]:
+        demo_num = int(demo_name.split("_")[1])
+        if run_idx is not None:
+            pattern = f"*_{run_idx}_env{demo_num}__*.mp4"
+        else:
+            pattern = f"*_{demo_num}__*.mp4"
+        paths = {}
+        for video_file in task_dir.glob(pattern):
+            stem = video_file.stem
+            dunder_idx = stem.rfind("__")
+            if dunder_idx == -1:
+                continue
+            cam_name = stem[dunder_idx + 2:]
+            if video_file.exists() and video_file.stat().st_size > 0:
+                paths[cam_name] = video_file
+        return paths
+
+    def _has_required_episode_videos(self, task_dir: Path, demo_name: str, run_idx: int | None = None) -> bool:
+        paths = self._episode_camera_video_paths(task_dir, demo_name, run_idx=run_idx)
+        if self.required_cameras:
+            return all(camera in paths for camera in self.required_cameras)
+        return bool(paths)
 
     def _find_episode_videos(self, task_dir: Path, episode_idx: int, demo_name: str, run_idx: int | None = None):
         """Find video files for an episode.
@@ -532,80 +650,36 @@ class LeRobotExporter:
             return False
 
     def _compute_observation_images_stats(self) -> dict[str, dict]:
-        """Compute min/max/mean/std per channel for each observation.images.* camera.
+        """Return lightweight placeholder image stats for each observation.images.* camera.
 
-        Returns stats in LeRobot format: min/max/mean/std as [[[ch0]], [[ch1]], [[ch2]]], count as [n].
+        Decoding all exported MP4s is expensive for RoboLab120-sized datasets and
+        the StarVLA training loader computes its own numeric stats later. Keep
+        LeRobot-compatible metadata here without scanning video pixels.
         """
-        try:
-            import cv2
-        except ImportError:
-            return {}
-
         result = {}
-        max_frames_per_video = 150  # Sample to limit memory
 
         for camera_name in self._video_features:
-            # Videos for this camera: (camera_name, src_path, episode_idx)
-            videos = [(path, ep_idx) for c, path, ep_idx in self._video_files if c == camera_name]
-            if not videos:
-                continue
-
             total_count = 0
-            for _, ep_idx in videos:
+            for camera, _, ep_idx in self._video_files:
+                if camera != camera_name:
+                    continue
                 if 0 <= ep_idx < len(self._episodes_metadata):
                     total_count += self._episodes_metadata[ep_idx]["length"]
 
-            all_pixels = []  # list of (H, W, 3) arrays, normalized 0-1
-            for src_path, _ in videos:
-                path = Path(src_path)
-                if not path.exists():
-                    continue
-                cap = cv2.VideoCapture(str(path))
-                n_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-                step = max(1, n_frames // max_frames_per_video) if n_frames else 1
-                idx = 0
-                while True:
-                    ret, frame = cap.read()
-                    if not ret:
-                        break
-                    if idx % step == 0:
-                        # BGR -> RGB, normalize to [0, 1]
-                        frame = frame[:, :, ::-1].astype(np.float32) / 255.0
-                        all_pixels.append(frame)
-                    idx += 1
-                cap.release()
-
-            if not all_pixels:
-                # No frames: use placeholder stats
-                result[camera_name] = {
-                    "min": [[[0.0]], [[0.0]], [[0.0]]],
-                    "max": [[[1.0]], [[1.0]], [[1.0]]],
-                    "mean": [[[0.5]], [[0.5]], [[0.5]]],
-                    "std": [[[0.5]], [[0.5]], [[0.5]]],
-                    "count": [total_count],
-                }
-                continue
-
-            stacked = np.concatenate([f.reshape(-1, 3) for f in all_pixels], axis=0)
-            ch_min = stacked.min(axis=0)
-            ch_max = stacked.max(axis=0)
-            ch_mean = stacked.mean(axis=0)
-            ch_std = stacked.std(axis=0)
-            ch_std = np.nan_to_num(ch_std, nan=0.0, posinf=0.0, neginf=0.0)
-
             result[camera_name] = {
-                "min": [[[float(ch_min[c])]] for c in range(3)],
-                "max": [[[float(ch_max[c])]] for c in range(3)],
-                "mean": [[[float(ch_mean[c])]] for c in range(3)],
-                "std": [[[float(ch_std[c])]] for c in range(3)],
+                "min": [[[0.0]], [[0.0]], [[0.0]]],
+                "max": [[[1.0]], [[1.0]], [[1.0]]],
+                "mean": [[[0.5]], [[0.5]], [[0.5]]],
+                "std": [[[0.5]], [[0.5]], [[0.5]]],
                 "count": [total_count],
             }
 
         return result
 
-    def _get_or_create_task(self, task_name: str) -> int:
+    def _get_or_create_task(self, task_name: str, task_dir: Path | None = None) -> int:
         """Get task index, creating new task entry if needed."""
-        instruction = self._get_instruction_for_task(task_name)
+        instructions = self._get_instruction_variants_for_task(task_name, task_dir=task_dir)
+        instruction = instructions["primary"]
 
         for i, task in enumerate(self._tasks):
             if task["task"] == instruction:
@@ -615,6 +689,11 @@ class LeRobotExporter:
         self._tasks.append({
             "task_index": task_idx,
             "task": instruction,
+            "instruction_default": instructions["default"],
+            "instruction_vague": instructions["vague"],
+            "instruction_specific": instructions["specific"],
+            "instruction_2": instructions["vague"],
+            "instruction_3": instructions["specific"],
         })
         return task_idx
 
@@ -685,6 +764,8 @@ class LeRobotExporter:
                 schema_fields.append(pa.field(key, pa.float32()))
             elif key == "next.done":
                 schema_fields.append(pa.field(key, pa.bool_()))
+            elif isinstance(value, str):
+                schema_fields.append(pa.field(key, pa.string()))
             elif isinstance(value, list):
                 # Use variable-length list to match reference datasets (e.g. thanos, aloha)
                 list_length = len(value)
@@ -718,6 +799,8 @@ class LeRobotExporter:
                         value = 0.0
                     elif key == "next.done":
                         value = False
+                    elif key in ("language_instruction", "language_instruction_2", "language_instruction_3"):
+                        value = ""
                     else:
                         # For list fields, create empty list of correct length
                         if key in list_lengths:
@@ -825,6 +908,65 @@ class LeRobotExporter:
 
         print(f"  Wrote {len(self._tasks)} tasks")
 
+
+    def _write_modality(self):
+        """Write StarVLA/world_lerobot-compatible modality metadata."""
+        video = {
+            "exterior_image_1_left": {"original_key": "observation.images.over_shoulder_left_camera"},
+            "exterior_image_2_left": {"original_key": "observation.images.over_shoulder_right_camera"},
+            "wrist_image_left": {"original_key": "observation.images.wrist_cam"},
+        }
+        available_video_keys = set(self._video_features.keys())
+        video = {
+            key: value
+            for key, value in video.items()
+            if value["original_key"] in available_video_keys
+        }
+        modality = {
+            "state": {
+                "joint_position": {
+                    "start": 0,
+                    "end": 7,
+                    "absolute": True,
+                    "dtype": "float32",
+                    "original_key": "observation.state",
+                },
+                "gripper_position": {
+                    "start": 12,
+                    "end": 13,
+                    "absolute": True,
+                    "dtype": "float32",
+                    "original_key": "observation.state",
+                },
+            },
+            "action": {
+                "joint_position": {
+                    "start": 0,
+                    "end": 7,
+                    "absolute": True,
+                    "dtype": "float32",
+                    "original_key": "action",
+                },
+                "gripper_position": {
+                    "start": 7,
+                    "end": 8,
+                    "absolute": True,
+                    "dtype": "float32",
+                    "original_key": "action",
+                },
+            },
+            "video": video,
+            "annotation": {
+                "language.language_instruction": {"original_key": "language_instruction"},
+                "language.language_instruction_2": {"original_key": "language_instruction_2"},
+                "language.language_instruction_3": {"original_key": "language_instruction_3"},
+            },
+        }
+        output_path = self.lerobot_dir / "meta" / "modality.json"
+        with open(output_path, "w") as f:
+            json.dump(modality, f, indent=2)
+        print("  Wrote modality.json")
+
     def _write_stats(self):
         """Write statistics to JSON file."""
         stats = self._compute_final_stats()
@@ -863,6 +1005,13 @@ class LeRobotExporter:
                 elif key == "next.done":
                     features[key] = {
                         "dtype": "bool",
+                        "shape": [1],
+                        "names": None,
+                        "fps": fps_int,
+                    }
+                elif isinstance(value, str):
+                    features[key] = {
+                        "dtype": "string",
                         "shape": [1],
                         "names": None,
                         "fps": fps_int,
@@ -1040,6 +1189,9 @@ def export_to_lerobot(
     robot_type: str = "franka",
     fps: float = 15.0,
     concatenate_videos: bool = True,
+    success_only: bool = False,
+    require_complete_videos: bool = False,
+    required_cameras: list[str] | tuple[str, ...] | None = None,
 ) -> Path:
     """Convenience function to export RoboLab output to LeRobot format.
 
@@ -1059,5 +1211,8 @@ def export_to_lerobot(
         robot_type=robot_type,
         fps=fps,
         concatenate_videos=concatenate_videos,
+        success_only=success_only,
+        require_complete_videos=require_complete_videos,
+        required_cameras=required_cameras,
     )
     return exporter.export()

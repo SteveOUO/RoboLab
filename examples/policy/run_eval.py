@@ -52,7 +52,7 @@ parser.add_argument("--tag", nargs='+', default=None,
 parser.add_argument("--task-dirs", nargs='+', default=DEFAULT_TASK_SUBFOLDERS,
                        help="List of task directories to evaluate on")
 parser.add_argument("--policy",
-                    choices=["pi0", "pi0_fast", "paligemma", "paligemma_fast", "pi05", "gr00t", "dreamzero", "smartworld", "molmo", "openvla", "openvla_oft"], default="pi05",
+                    choices=["pi0", "pi0_fast", "paligemma", "paligemma_fast", "pi05", "gr00t", "dreamzero", "smartworld", "cosmos3", "molmo", "openvla", "openvla_oft"], default="pi05",
                        help="Action-prediction backend to use (default: pi05)")
 parser.add_argument("--num-runs", "--num_runs", type=int, default=1,
                        help="Number of sequential runs per task (default: 1). Total episodes = num_runs * num_envs. Prefer increasing --num_envs for more episodes. Only increase --num-runs if you run out of GPU memory with the desired num_envs.")
@@ -100,6 +100,8 @@ parser.add_argument("--instruction-type", "--instruction_type", type=str, defaul
 parser.add_argument("--video-mode", "--video_mode", type=str, default="all",
                     choices=["all", "viewport", "sensor", "none"],
                     help="Which videos to save: 'all' (sensor + viewport), 'viewport' only, 'sensor' only, or 'none' (default: all)")
+parser.add_argument("--max-episode-steps", "--max_episode_steps", type=int, default=None,
+                    help="Optional cap on environment steps per episode for short smoke/debug runs.")
 parser.add_argument("--randomize-background", "--randomize_background", action="store_true",
                     help="Sample a random non-default background per task at registration time. "
                          "Each registered env gets one fixed background; the chosen texture is "
@@ -146,6 +148,9 @@ registration_kwargs = {
 }
 
 if args_cli.policy == "smartworld":
+    from robolab.registrations.droid_jointpos.camera_presets import WRIST_LEFT_RIGHT # noqa
+    registration_kwargs["cameras"] = WRIST_LEFT_RIGHT
+elif args_cli.policy == "cosmos3":
     from robolab.registrations.droid_jointpos.camera_presets import WRIST_LEFT_RIGHT # noqa
     registration_kwargs["cameras"] = WRIST_LEFT_RIGHT
 elif args_cli.policy == "dreamzero" and args_cli.dz_cam2 in ("right", "head"):
@@ -241,6 +246,7 @@ def main():
                         client=client,
                         save_videos=args_cli.save_videos,
                         video_mode=args_cli.video_mode,
+                        max_episode_steps=args_cli.max_episode_steps,
                         headless=args_cli.headless)
 
             episode_results = summarize_run(

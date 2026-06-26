@@ -56,6 +56,22 @@ Examples:
         default=None,
         help="Hugging Face repository ID (optional)"
     )
+    parser.add_argument(
+        "--success-only",
+        action="store_true",
+        help="Export only demos whose HDF5 success attr is True"
+    )
+    parser.add_argument(
+        "--require-complete-videos",
+        action="store_true",
+        help="Export only demos with all required camera videos present"
+    )
+    parser.add_argument(
+        "--required-cameras",
+        nargs="*",
+        default=None,
+        help="Camera names required when --require-complete-videos is set"
+    )
 
     args = parser.parse_args()
 
@@ -74,6 +90,9 @@ Examples:
             lerobot_output_dir=args.output,
             robot_type=args.robot_type,
             fps=args.fps,
+            success_only=args.success_only,
+            require_complete_videos=args.require_complete_videos,
+            required_cameras=args.required_cameras,
         )
         print(f"\nSuccess! LeRobot dataset created at: {output_path}")
         print(f"\nTo visualize, run the lerobot-dataset-visualizer and open:")

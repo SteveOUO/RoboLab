@@ -39,3 +39,9 @@ try:
     __all__.append("SmartWorldDroidJointposClient")
 except ImportError:
     pass
+
+try:
+    from .cosmos3 import Cosmos3Client
+    __all__.append("Cosmos3Client")
+except ImportError:
+    pass

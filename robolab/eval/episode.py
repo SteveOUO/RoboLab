@@ -87,7 +87,7 @@ def _unique_clients(clients: Sequence[InferenceClient]) -> list[InferenceClient]
     return list(dict.fromkeys(clients))
 
 
-def run_episode(env, env_cfg, episode, client: InferenceClient | Sequence[InferenceClient], *, headless=False, save_videos=True, video_mode="all"):
+def run_episode(env, env_cfg, episode, client: InferenceClient | Sequence[InferenceClient], *, headless=False, save_videos=True, video_mode="all", max_episode_steps: int | None = None):
     """Run a policy-controlled episode across all parallel envs.
 
     The policy client is constructed by the caller (typically via
@@ -114,6 +114,8 @@ def run_episode(env, env_cfg, episode, client: InferenceClient | Sequence[Infere
     obs, _ = env.reset()
     obs, _ = env.reset()
     max_steps = env.max_episode_length
+    if max_episode_steps is not None:
+        max_steps = min(max_steps, int(max_episode_steps))
     video_fps = 1 / (env_cfg.sim.render_interval * env_cfg.sim.dt) # Hz
     instruction = env_cfg.instruction
     # Pull action dim from the env's action manager (IsaacLab canonical),

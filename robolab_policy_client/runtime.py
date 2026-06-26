@@ -47,6 +47,12 @@ try:
 except ImportError:
     pass
 
+try:
+    from .cosmos3 import Cosmos3Client
+    POLICY_REGISTRY["cosmos3"] = Cosmos3Client
+except ImportError:
+    pass
+
 
 def create_client(name: str, **kwargs: Any) -> InferenceClient:
     """Construct the inference client for a given backend name.

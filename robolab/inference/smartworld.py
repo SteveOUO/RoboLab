@@ -133,7 +133,6 @@ class SmartWorldDroidJointposClient(InferenceClient):
 
         if action.shape != (8,):
             raise ValueError(f"SmartWorld RoboLab client expects 8D action, got shape={action.shape}.")
-        action[-1] = 1.0 if action[-1] > 0.5 else 0.0
 
         return {"action": action, "viz": stitched_frame}
 

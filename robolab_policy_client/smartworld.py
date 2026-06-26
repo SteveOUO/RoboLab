@@ -1,11 +1,13 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: CC-BY-NC-4.0
 
+import os
+import time
+
 import msgpack
 import numpy as np
 import torch
 import torch.nn.functional as F
-import time
 import websockets.sync.client
 from PIL import Image
 
@@ -64,15 +66,38 @@ class SmartWorldWebsocketClient:
         self._metadata = self._packer.unpack(metadata_bytes)
         if not isinstance(self._metadata, dict):
             raise TypeError(f"Expected server metadata dict, got {type(self._metadata)!r}.")
+        self._profile_timing = os.environ.get("SMARTWORLD_PROFILE_CLIENT_TIMING", "0").strip().lower() in {"1", "true", "yes", "on"}
+        self._request_index = 0
 
     def get_server_metadata(self) -> dict:
         return dict(self._metadata)
 
     def predict_action(self, request: dict) -> dict:
-        self._ws.send(self._packer.pack(request))
-        response = self._packer.unpack(self._ws.recv())
+        self._request_index += 1
+        total_start = time.perf_counter()
+        pack_start = time.perf_counter()
+        packed_request = self._packer.pack(request)
+        pack_sec = time.perf_counter() - pack_start
+        send_start = time.perf_counter()
+        self._ws.send(packed_request)
+        send_sec = time.perf_counter() - send_start
+        recv_start = time.perf_counter()
+        packed_response = self._ws.recv()
+        recv_sec = time.perf_counter() - recv_start
+        unpack_start = time.perf_counter()
+        response = self._packer.unpack(packed_response)
+        unpack_sec = time.perf_counter() - unpack_start
         if not isinstance(response, dict):
             raise TypeError(f"Expected server response dict, got {type(response)!r}.")
+        if self._profile_timing:
+            total_sec = time.perf_counter() - total_start
+            print(
+                f"[SmartWorldWebsocketClient] timing request_index={self._request_index} "
+                f"request_bytes={len(packed_request)} response_bytes={len(packed_response)} "
+                f"total={total_sec:.3f}s pack={pack_sec:.3f}s send={send_sec:.3f}s "
+                f"recv={recv_sec:.3f}s unpack={unpack_sec:.3f}s",
+                flush=True,
+            )
         return response
 
     def close(self) -> None:
@@ -81,6 +106,11 @@ class SmartWorldWebsocketClient:
 
 class SmartWorldDroidJointposClient(InferenceClient):
     requires_dedicated_env_client = True
+    _CAMERA_REQUEST_KEYS = (
+        "observation/exterior_image_0_left",
+        "observation/exterior_image_1_left",
+        "observation/wrist_image_left",
+    )
 
     def __init__(
         self,
@@ -95,8 +125,8 @@ class SmartWorldDroidJointposClient(InferenceClient):
         self.open_loop_horizon = None if open_loop_horizon is None else int(open_loop_horizon)
         self.experiment_name = experiment_name
         self.return_viz = bool(return_viz)
-        self.image_height = 180
-        self.image_width = 320
+        self.image_height = int(os.environ.get("SMARTWORLD_CLIENT_IMAGE_HEIGHT", "320"))
+        self.image_width = int(os.environ.get("SMARTWORLD_CLIENT_IMAGE_WIDTH", "480"))
 
         print(f"[{self.__class__.__name__}] Awaiting server on {remote_host}:{remote_port}...")
         self.client = SmartWorldWebsocketClient(
@@ -113,6 +143,9 @@ class SmartWorldDroidJointposClient(InferenceClient):
                     "SmartWorld causal rollout requires consuming a full causal action chunk before re-querying. "
                     f"Got open_loop_horizon={self.open_loop_horizon}, causal_action_chunk_len={causal_chunk_len}."
                 )
+        self._camera_request_keys = self._resolve_camera_request_keys(self._server_metadata)
+        print(f"[{self.__class__.__name__}] Sending camera keys: {self._camera_request_keys}")
+        print(f"[{self.__class__.__name__}] Sending image history: {self._requires_image_history}")
 
         self._env_chunk: dict[int, np.ndarray] = {}
         self._env_counter: dict[int, int] = {}
@@ -120,6 +153,35 @@ class SmartWorldDroidJointposClient(InferenceClient):
         self._env_executed_actions: dict[int, list[np.ndarray]] = {}
         self._env_image_history: dict[int, list[tuple[int, dict[str, np.ndarray]]]] = {}
         self._profile_sections: list[tuple[str, float]] = []
+
+    def _resolve_camera_request_keys(self, metadata: dict | None = None) -> list[str]:
+        metadata = self._server_metadata if metadata is None else metadata
+        raw_keys = metadata.get("required_camera_keys")
+        if raw_keys is None:
+            keys_by_purpose = metadata.get("camera_request_keys_by_purpose")
+            if keys_by_purpose is None:
+                keys_by_purpose = metadata.get("camera_keys_by_purpose")
+            if isinstance(keys_by_purpose, dict):
+                flattened = []
+                for purpose_keys in keys_by_purpose.values():
+                    if isinstance(purpose_keys, (list, tuple)):
+                        flattened.extend(purpose_keys)
+                raw_keys = flattened
+        if raw_keys is None:
+            return list(self._CAMERA_REQUEST_KEYS)
+        if not isinstance(raw_keys, (list, tuple)):
+            raise TypeError(f"Server required_camera_keys must be a list, got {type(raw_keys)!r}.")
+        selected = []
+        for raw_key in raw_keys:
+            key = str(raw_key)
+            if key not in self._CAMERA_REQUEST_KEYS:
+                raise ValueError(
+                    f"SmartWorld server requested unsupported camera key {key!r}. "
+                    f"Supported keys: {list(self._CAMERA_REQUEST_KEYS)!r}."
+                )
+            if key not in selected:
+                selected.append(key)
+        return selected or list(self._CAMERA_REQUEST_KEYS)
 
     def clone(self) -> "SmartWorldDroidJointposClient":
         return type(self)(
@@ -136,7 +198,9 @@ class SmartWorldDroidJointposClient(InferenceClient):
             request["experiment_name"] = self.experiment_name
         response = self.client.predict_action(request)
         if isinstance(response, dict):
-            self._requires_image_history = self._metadata_requires_image_history(response)
+            self._server_metadata.update(response)
+            self._requires_image_history = self._metadata_requires_image_history(self._server_metadata)
+            self._camera_request_keys = self._resolve_camera_request_keys(self._server_metadata)
         self._profile_sections.clear()
         if env_id is None:
             self._env_chunk.clear()
@@ -177,46 +241,46 @@ class SmartWorldDroidJointposClient(InferenceClient):
             if env_id not in self._env_executed_actions:
                 self._env_executed_actions[env_id] = []
             self._env_executed_actions[env_id].append(executed_action)
-
         if env_id not in self._env_image_history:
             self._env_image_history[env_id] = []
 
         process_images = bool(needs_query or self._requires_image_history or self.return_viz)
         images = None
+        all_views = None
         history_views = None
         if process_images:
             images = self._extract_resized_images(obs, env_id=env_id)
-            history_views = {
+            all_views = {
                 "observation/exterior_image_0_left": images["external_image_0"],
                 "observation/exterior_image_1_left": images["external_image_1"],
                 "observation/wrist_image_left": images["wrist_image"],
             }
+            history_views = {key: all_views[key] for key in self._camera_request_keys}
 
         if needs_query:
-            if images is None or history_views is None:
+            if images is None or all_views is None or history_views is None:
                 images = self._extract_resized_images(obs, env_id=env_id)
-                history_views = {
+                all_views = {
                     "observation/exterior_image_0_left": images["external_image_0"],
                     "observation/exterior_image_1_left": images["external_image_1"],
                     "observation/wrist_image_left": images["wrist_image"],
                 }
+                history_views = {key: all_views[key] for key in self._camera_request_keys}
             executed_count = counter
             counter = 0
             executed_actions = self._env_executed_actions.get(env_id, [])
             request_data = {
-                "observation/exterior_image_0_left": images["external_image_0"],
-                "observation/exterior_image_1_left": images["external_image_1"],
-                "observation/wrist_image_left": images["wrist_image"],
                 "observation/joint_position": curr_state["joint_position"],
                 "observation/gripper_position": curr_state["gripper_position"],
                 "prompt": instruction,
                 "control_step": control_step,
                 "history/executed_action_count": executed_count,
             }
+            request_data.update({key: all_views[key] for key in self._camera_request_keys})
             if len(executed_actions) > 0:
                 request_data["history/executed_actions"] = np.stack(executed_actions, axis=0).astype(np.float32)
             image_history = self._env_image_history[env_id]
-            if len(image_history) > 0:
+            if self._requires_image_history and len(image_history) > 0:
                 stack_start = time.perf_counter()
                 history_steps, history_view_dicts = zip(*image_history)
                 request_data["history/step_indices"] = np.asarray(history_steps, dtype=np.int64)
@@ -253,7 +317,6 @@ class SmartWorldDroidJointposClient(InferenceClient):
 
         if action.shape != (8,):
             raise ValueError(f"SmartWorld RoboLab client expects 8D action, got shape={action.shape}.")
-        action[-1] = 1.0 if action[-1] > 0.5 else 0.0
 
         result = {"action": action}
         if self.return_viz and images is not None:
@@ -284,14 +347,24 @@ class SmartWorldDroidJointposClient(InferenceClient):
         return bool(metadata["requires_image_history"])
 
     def _pack_request(self, extracted_obs: dict, instruction: str) -> dict:
-        return {
-            "observation/exterior_image_0_left": extracted_obs["external_image_0"],
-            "observation/exterior_image_1_left": extracted_obs["external_image_1"],
-            "observation/wrist_image_left": extracted_obs["wrist_image"],
+        views = {
+            "observation/exterior_image_0_left": self._resize_image(
+                extracted_obs["external_image_0"], self.image_height, self.image_width
+            ),
+            "observation/exterior_image_1_left": self._resize_image(
+                extracted_obs["external_image_1"], self.image_height, self.image_width
+            ),
+            "observation/wrist_image_left": self._resize_image(
+                extracted_obs["wrist_image"], self.image_height, self.image_width
+            ),
+        }
+        request = {
             "observation/joint_position": extracted_obs["joint_position"],
             "observation/gripper_position": extracted_obs["gripper_position"],
             "prompt": instruction,
         }
+        request.update({key: views[key] for key in self._camera_request_keys})
+        return request
 
     def _query_server(self, request: dict) -> dict:
         return self.client.predict_action(request)
