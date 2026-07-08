@@ -134,8 +134,17 @@ class SmartWorldDroidJointposClient(InferenceClient):
             remote_port,
         )
         self._server_metadata = self.client.get_server_metadata()
+        if "image_height" in self._server_metadata or "image_width" in self._server_metadata:
+            if "image_height" not in self._server_metadata or "image_width" not in self._server_metadata:
+                raise ValueError(
+                    "SmartWorld server metadata must provide both image_height and image_width when overriding "
+                    "client image size."
+                )
+            self.image_height = int(self._server_metadata["image_height"])
+            self.image_width = int(self._server_metadata["image_width"])
         self._requires_image_history = self._metadata_requires_image_history(self._server_metadata)
         print(f"[{self.__class__.__name__}] Server metadata: {self._server_metadata}")
+        print(f"[{self.__class__.__name__}] Sending image size: {self.image_height}x{self.image_width}")
         if bool(self._server_metadata.get("causal_action_rollout")) and self.open_loop_horizon is not None:
             causal_chunk_len = int(self._server_metadata.get("causal_action_chunk_len") or 0)
             if causal_chunk_len > 0 and int(self.open_loop_horizon) < causal_chunk_len:

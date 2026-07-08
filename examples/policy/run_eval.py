@@ -138,6 +138,18 @@ robolab.constants.RECORD_IMAGE_DATA = args_cli.record_image_data
 robolab.constants.VERBOSE = args_cli.enable_verbose
 robolab.constants.DEBUG = args_cli.enable_debug
 
+
+def _read_smartworld_server_metadata() -> dict:
+    from robolab_policy_client.smartworld import SmartWorldWebsocketClient
+
+    client = SmartWorldWebsocketClient(args_cli.remote_host, args_cli.remote_port)
+    try:
+        metadata = client.get_server_metadata()
+    finally:
+        client.close()
+    return metadata
+
+
 # Run automatic factory generation before main
 from robolab.registrations.droid_jointpos.auto_env_registrations import auto_register_droid_envs # noqa
 registration_kwargs = {
@@ -148,8 +160,18 @@ registration_kwargs = {
 }
 
 if args_cli.policy == "smartworld":
-    from robolab.registrations.droid_jointpos.camera_presets import WRIST_LEFT_RIGHT # noqa
-    registration_kwargs["cameras"] = WRIST_LEFT_RIGHT
+    from robolab.registrations.droid_jointpos.camera_presets import WRIST_LEFT_RIGHT, with_camera_resolution # noqa
+    smartworld_metadata = _read_smartworld_server_metadata()
+    if "image_height" not in smartworld_metadata or "image_width" not in smartworld_metadata:
+        raise ValueError(
+            "SmartWorld server metadata must provide image_height and image_width before RoboLab env registration."
+        )
+    image_height = int(smartworld_metadata["image_height"])
+    image_width = int(smartworld_metadata["image_width"])
+    cameras, robot_cfg = with_camera_resolution(WRIST_LEFT_RIGHT, height=image_height, width=image_width)
+    registration_kwargs["cameras"] = cameras
+    registration_kwargs["robot_cfg"] = robot_cfg
+    print(f"[RoboLab] SmartWorld camera render size: {image_height}x{image_width}")
 elif args_cli.policy == "cosmos3":
     from robolab.registrations.droid_jointpos.camera_presets import WRIST_LEFT_RIGHT # noqa
     registration_kwargs["cameras"] = WRIST_LEFT_RIGHT

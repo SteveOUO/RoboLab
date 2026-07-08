@@ -27,7 +27,7 @@ The columns are:
 
 """
 def auto_register_droid_envs(task_dirs=DEFAULT_TASK_SUBFOLDERS, lighting_intensity=None, task=None, cameras=None,
-                             randomize_background=False, background_seed=None):
+                             robot_cfg=None, randomize_background=False, background_seed=None):
     """Automatically discover and register tasks.
 
     Args:
@@ -40,6 +40,8 @@ def auto_register_droid_envs(task_dirs=DEFAULT_TASK_SUBFOLDERS, lighting_intensi
               the presets from ``camera_presets`` (e.g. ``WRIST_LEFT``,
               ``WRIST_LEFT_RIGHT_HEAD``) or your own list. Defaults to ``WRIST_LEFT``.
               The viewport camera is attached separately for video recording.
+        robot_cfg: Optional robot config override. Use this with resized wrist
+              camera presets because the wrist camera is sourced from the robot cfg.
         randomize_background: If True, sample a random background per task at registration time
               (excluding the default home_office background). Each registered env gets one fixed
               background; assignments are reproducible when ``background_seed`` is provided.
@@ -62,6 +64,8 @@ def auto_register_droid_envs(task_dirs=DEFAULT_TASK_SUBFOLDERS, lighting_intensi
 
     if cameras is None:
         cameras = WRIST_LEFT
+    if robot_cfg is None:
+        robot_cfg = DroidCfg
 
     ImageObsCfg = generate_image_obs_from_cameras(cameras)
     ViewportCameraCfg = generate_image_obs_from_cameras([EgocentricMirroredCameraCfg])
@@ -74,7 +78,7 @@ def auto_register_droid_envs(task_dirs=DEFAULT_TASK_SUBFOLDERS, lighting_intensi
     # WristCameraCfg is robot-mounted (wrist_cam is already attached via DroidCfg).
     # Including it as a scene mixin puts wrist_cam before robot in dataclass field
     # order, causing the camera to spawn before its parent prim exists.
-    scene_cameras = [c for c in cameras if c is not WristCameraCfg]
+    scene_cameras = [c for c in cameras if not issubclass(c, WristCameraCfg)]
 
     if randomize_background:
         from robolab.variations.backgrounds import find_background_files, generate_background_config
@@ -105,7 +109,7 @@ def auto_register_droid_envs(task_dirs=DEFAULT_TASK_SUBFOLDERS, lighting_intensi
         env_postfix="",
         observations_cfg=ObservationCfg(),
         actions_cfg=DroidJointPositionActionCfg(),
-        robot_cfg=DroidCfg,
+        robot_cfg=robot_cfg,
         camera_cfg=[*scene_cameras, EgocentricMirroredCameraCfg],
         lighting_cfg=SphereLightCfg,
         background_cfg=background_cfg,

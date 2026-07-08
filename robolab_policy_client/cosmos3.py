@@ -97,8 +97,14 @@ class Cosmos3Client(InferenceClient):
         }
 
     def _pack_request(self, extracted_obs: dict, instruction: str) -> dict:
+        left = image_tools.resize_with_pad(extracted_obs["left_image"], self._image_h, self._image_w)
+        wrist = image_tools.resize_with_pad(extracted_obs["wrist_image"], self._image_h, self._image_w)
+        right = image_tools.resize_with_pad(extracted_obs["right_image"], self._image_h, self._image_w)
         return {
-            "observation/image": self._compose_observation_image(extracted_obs),
+            "observation/image": self._compose_observation_image_from_views(wrist=wrist, left=left, right=right),
+            "observation/exterior_image_1_left": left,
+            "observation/exterior_image_2_left": right,
+            "observation/wrist_image_left": wrist,
             "observation/joint_position": extracted_obs["joint_position"],
             "observation/gripper_position": extracted_obs["gripper_position"],
             "prompt": instruction,
@@ -130,7 +136,15 @@ class Cosmos3Client(InferenceClient):
         wrist = image_tools.resize_with_pad(extracted_obs["wrist_image"], self._image_h, self._image_w)
         left = image_tools.resize_with_pad(extracted_obs["left_image"], self._image_h, self._image_w)
         right = image_tools.resize_with_pad(extracted_obs["right_image"], self._image_h, self._image_w)
+        return self._compose_observation_image_from_views(wrist=wrist, left=left, right=right)
 
+    def _compose_observation_image_from_views(
+        self,
+        *,
+        wrist: np.ndarray,
+        left: np.ndarray,
+        right: np.ndarray,
+    ) -> np.ndarray:
         bottom_size = (self._image_h // 2, self._image_w // 2)
         left = self._resize_no_pad(left, bottom_size)
         right = self._resize_no_pad(right, bottom_size)
