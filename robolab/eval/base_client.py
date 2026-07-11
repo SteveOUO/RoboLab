@@ -33,9 +33,8 @@ class InferenceClient(ABC):
     different observation sources without duplicating the wire format.
     """
 
-    # Subclasses override to match their server's chunk length.
-    # horizon=1 is correct for single-action servers.
-    open_loop_horizon: int = 1
+    # None executes the complete chunk returned by the server.
+    open_loop_horizon: int | None = None
 
     def __init__(self) -> None:
         # Per-env chunking state. Subclasses may ignore and manage state however
@@ -129,9 +128,20 @@ class InferenceClient(ABC):
     # ------------------------------------------------------------------
 
     def _needs_refresh(self, env_id: int) -> bool:
-        return env_id not in self._chunks or self._counters[env_id] >= self.open_loop_horizon
+        if env_id not in self._chunks:
+            return True
+        chunk_horizon = len(self._chunks[env_id])
+        refresh_horizon = chunk_horizon if self.open_loop_horizon is None else self.open_loop_horizon
+        return self._counters[env_id] >= refresh_horizon
 
     def _set_chunk(self, env_id: int, chunk: np.ndarray) -> None:
+        chunk_horizon = len(chunk)
+        if chunk_horizon < 1:
+            raise ValueError("Policy server returned an empty action chunk.")
+        if self.open_loop_horizon is not None and self.open_loop_horizon > chunk_horizon:
+            raise ValueError(
+                f"open_loop_horizon={self.open_loop_horizon} exceeds returned chunk length={chunk_horizon}."
+            )
         self._chunks[env_id] = chunk
         self._counters[env_id] = 0
 

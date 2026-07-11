@@ -18,8 +18,6 @@ class Cosmos3Client(InferenceClient):
 
     IMAGE_W = 640
     IMAGE_H = 360
-    OPEN_LOOP_HORIZON = 32
-
     def __init__(
         self,
         remote_host: str = "localhost",
@@ -31,7 +29,9 @@ class Cosmos3Client(InferenceClient):
         self._remote_host = remote_host
         self._remote_port = int(remote_port)
         self._remote_uri = remote_uri
-        self.open_loop_horizon = self.OPEN_LOOP_HORIZON if open_loop_horizon is None else int(open_loop_horizon)
+        self.open_loop_horizon = None if open_loop_horizon is None else int(open_loop_horizon)
+        if self.open_loop_horizon is not None and self.open_loop_horizon < 1:
+            raise ValueError(f"open_loop_horizon must be positive, got {self.open_loop_horizon}.")
 
         self._image_w = self.IMAGE_W
         self._image_h = self.IMAGE_H
