@@ -5,6 +5,8 @@
 
 from __future__ import annotations
 
+import argparse
+import json
 import math
 import os
 import re
@@ -16,6 +18,9 @@ from typing import Any
 from robolab.core.logging.run_paths import run_log_dir, starvla_root, utc8_now
 
 ANSI_RE = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]")
+FOUR_GPU_PROFILE_MARKER = "[four-gpu-profile]"
+FOUR_GPU_BRANCHES = ("vision_cond", "vision_uncond", "action_cond", "action_uncond")
+FOUR_GPU_STAGES = ("head", "wrist")
 
 
 def _finite(value: Any) -> float | None:
@@ -67,6 +72,67 @@ def _percentile(values: list[float], percentile: float, digits: int = 1) -> floa
     return round(value, digits)
 
 
+def _seconds_summary(values: list[float]) -> dict[str, Any]:
+    total = sum(values)
+    return {
+        "count": len(values),
+        "total_s": round(total, 3),
+        "avg_s": round(total / len(values), 3),
+        "p50_s": _percentile(values, 50, 3),
+        "p95_s": _percentile(values, 95, 3),
+        "max_s": round(max(values), 3),
+    }
+
+
+def _four_gpu_profile_summary(text: str) -> tuple[dict[str, dict[str, Any]], float | None]:
+    """Parse structured four-GPU stage profiles, ignoring synthetic warmup."""
+
+    grouped: dict[tuple[str, str, str | None], list[float]] = defaultdict(list)
+    decoder = json.JSONDecoder()
+    for line in text.splitlines():
+        _, marker, suffix = line.partition(FOUR_GPU_PROFILE_MARKER)
+        if not marker:
+            continue
+        try:
+            record, _ = decoder.raw_decode(suffix.lstrip())
+        except (json.JSONDecodeError, TypeError):
+            continue
+        if not isinstance(record, dict):
+            continue
+        request_id = _finite(record.get("request_id"))
+        if request_id is None or request_id < 0:
+            continue
+        stage = str(record.get("stage", ""))
+        if stage not in FOUR_GPU_STAGES:
+            continue
+        scope = record.get("scope")
+        elapsed = _finite(record.get("total"))
+        if elapsed is None or elapsed < 0:
+            continue
+        if scope == "coordinator_stage":
+            grouped[("coordinator", stage, None)].append(elapsed)
+        elif scope == "actor_stage":
+            branch = str(record.get("branch", ""))
+            if branch in FOUR_GPU_BRANCHES:
+                grouped[("actor", stage, branch)].append(elapsed)
+
+    components: dict[str, dict[str, Any]] = {}
+    coordinator_totals: list[float] = []
+    for stage in FOUR_GPU_STAGES:
+        values = grouped.get(("coordinator", stage, None), [])
+        if values:
+            components[f"coordinator_{stage}"] = _seconds_summary(values)
+            coordinator_totals.extend(values)
+    for branch in FOUR_GPU_BRANCHES:
+        for stage in FOUR_GPU_STAGES:
+            values = grouped.get(("actor", stage, branch), [])
+            if values:
+                components[f"actor_{branch}_{stage}"] = _seconds_summary(values)
+
+    server_time_s = round(sum(coordinator_totals), 3) if coordinator_totals else None
+    return components, server_time_s
+
+
 def _inference_latency_summary(episodes: list[dict]) -> dict[str, Any]:
     samples_ms: list[float] = []
     for ep in episodes:
@@ -96,7 +162,9 @@ def _inference_latency_summary(episodes: list[dict]) -> dict[str, Any]:
         if ep_count is None:
             continue
         count += int(ep_count)
-        total_s += _finite(_timing(ep, "inference_latency_total_s")) or _finite(_timing(ep, "inference_latency_s")) or 0.0
+        total_s += (
+            _finite(_timing(ep, "inference_latency_total_s")) or _finite(_timing(ep, "inference_latency_s")) or 0.0
+        )
         ep_min = _finite(_timing(ep, "inference_latency_min_ms"))
         ep_max = _finite(_timing(ep, "inference_latency_max_ms"))
         if ep_min is not None:
@@ -138,6 +206,7 @@ def summarize_server_log(path: str | os.PathLike[str] | None) -> dict[str, Any] 
 
     text = _strip_ansi(log_path.read_text(errors="replace"))
     compact = re.sub(r"\s+", "", text)
+    four_gpu_components, four_gpu_server_time = _four_gpu_profile_summary(text)
     components = {
         "websocket": r"websockettiming",
         "coordinator": r"coordinatortiming",
@@ -146,7 +215,11 @@ def summarize_server_log(path: str | os.PathLike[str] | None) -> dict[str, Any] 
         "frame_actor": r"frameactortiming",
         "cfg_actor": r"cfgactortiming",
     }
-    summary: dict[str, Any] = {"log_path": str(log_path), "found": True, "components": {}}
+    summary: dict[str, Any] = {
+        "log_path": str(log_path),
+        "found": True,
+        "components": dict(four_gpu_components),
+    }
     output_dirs: dict[str, str] = {}
     debug_matches = re.findall(r"DROID server debug output dir:\s*(\S+)", text)
     video_matches = re.findall(r"DROID server video output dir:\s*(\S+)", text)
@@ -186,7 +259,9 @@ def summarize_server_log(path: str | os.PathLike[str] | None) -> dict[str, Any] 
             }
 
     websocket = summary["components"].get("websocket")
-    summary["server_time_s"] = websocket.get("total_s") if websocket else None
+    summary["server_time_s"] = four_gpu_server_time
+    if summary["server_time_s"] is None and websocket:
+        summary["server_time_s"] = websocket.get("total_s")
     return summary
 
 
@@ -204,10 +279,7 @@ def _discover_server_log(log_dir: Path) -> str | None:
 
 def _run_tag(args: Any) -> str:
     return str(
-        getattr(args, "run_tag", None)
-        or os.environ.get("STARVLA_RUN_TAG")
-        or os.environ.get("STARVLA_RUN_LABEL")
-        or ""
+        getattr(args, "run_tag", None) or os.environ.get("STARVLA_RUN_TAG") or os.environ.get("STARVLA_RUN_LABEL") or ""
     )
 
 
@@ -237,30 +309,35 @@ def build_result_summary(
         eps = tasks[task_name]
         task_successes = sum(1 for ep in eps if ep.get("success"))
         task_steps = [ep.get("episode_step") for ep in eps]
-        task_rows.append({
-            "name": task_name,
-            "task_name": eps[0].get("task_name"),
-            "episodes": len(eps),
-            "successes": task_successes,
-            "success_rate": _success_rate(task_successes, len(eps)),
-            "steps_total": sum(int(ep.get("episode_step") or 0) for ep in eps),
-            "steps_avg": _mean(task_steps, 1),
-            "duration_avg_s": _mean([ep.get("duration") for ep in eps], 3),
-            "client_wall_total_s": _sum([_timing(ep, "wall_total_s") for ep in eps], 3),
-            "policy_inference_s": _sum([_timing(ep, "policy_inference_s") for ep in eps], 3),
-            "env_step_s": _sum([_timing(ep, "env_step_s") for ep in eps], 3),
-            "it_per_sec_avg": _mean([_timing(ep, "it_per_sec") for ep in eps], 3),
-            "inference_latency": _inference_latency_summary(eps),
-            "metrics": {
-                "ee_sparc_avg": _mean([_metric(ep, "ee_sparc") for ep in eps], 3),
-                "ee_path_length_avg_m": _mean([_metric(ep, "ee_path_length") for ep in eps], 3),
-                "ee_speed_avg_cm_s": _mean([
-                    (_finite(_metric(ep, "ee_speed_mean")) or 0.0) * 100
-                    for ep in eps
-                    if _finite(_metric(ep, "ee_speed_mean")) is not None
-                ], 3),
-            },
-        })
+        task_rows.append(
+            {
+                "name": task_name,
+                "task_name": eps[0].get("task_name"),
+                "episodes": len(eps),
+                "successes": task_successes,
+                "success_rate": _success_rate(task_successes, len(eps)),
+                "steps_total": sum(int(ep.get("episode_step") or 0) for ep in eps),
+                "steps_avg": _mean(task_steps, 1),
+                "duration_avg_s": _mean([ep.get("duration") for ep in eps], 3),
+                "client_wall_total_s": _sum([_timing(ep, "wall_total_s") for ep in eps], 3),
+                "policy_inference_s": _sum([_timing(ep, "policy_inference_s") for ep in eps], 3),
+                "env_step_s": _sum([_timing(ep, "env_step_s") for ep in eps], 3),
+                "it_per_sec_avg": _mean([_timing(ep, "it_per_sec") for ep in eps], 3),
+                "inference_latency": _inference_latency_summary(eps),
+                "metrics": {
+                    "ee_sparc_avg": _mean([_metric(ep, "ee_sparc") for ep in eps], 3),
+                    "ee_path_length_avg_m": _mean([_metric(ep, "ee_path_length") for ep in eps], 3),
+                    "ee_speed_avg_cm_s": _mean(
+                        [
+                            (_finite(_metric(ep, "ee_speed_mean")) or 0.0) * 100
+                            for ep in eps
+                            if _finite(_metric(ep, "ee_speed_mean")) is not None
+                        ],
+                        3,
+                    ),
+                },
+            }
+        )
 
     client_wall = _sum([_timing(ep, "wall_total_s") for ep in episode_results], 3)
     summary = {
@@ -345,3 +422,61 @@ def write_result_yaml(summary: dict[str, Any], log_dir: str | os.PathLike[str] |
     print(f"[RoboLab] result summary: {result_file}")
     return result_file
 
+
+def refresh_result_yaml_server_summary(
+    result_file: str | os.PathLike[str],
+    server_log: str | os.PathLike[str] | None = None,
+) -> Path:
+    """Refresh only the server section after the policy server has stopped.
+
+    MPI launchers may buffer the final stdout records beyond the point where
+    the remote RoboLab client first writes ``result.yaml``.  Re-reading the
+    completed server log after launcher shutdown keeps all client-side fields
+    untouched while making the structured stage counts complete.
+    """
+
+    result_path = Path(result_file)
+    import yaml
+
+    summary = yaml.safe_load(result_path.read_text(encoding="utf-8"))
+    if not isinstance(summary, dict):
+        raise ValueError(f"result file must contain a mapping: {result_path}")
+
+    if server_log is None:
+        existing_server = summary.get("server")
+        if isinstance(existing_server, dict):
+            server_log = existing_server.get("log_path")
+        if not server_log:
+            run = summary.get("run")
+            if isinstance(run, dict):
+                server_log = run.get("server_log")
+    if not server_log:
+        raise ValueError(f"no server log path recorded in {result_path}")
+
+    refreshed_server = summarize_server_log(server_log)
+    if refreshed_server is None or not refreshed_server.get("found"):
+        raise FileNotFoundError(f"server log not found: {server_log}")
+    summary["server"] = refreshed_server
+
+    temporary_path = result_path.with_name(f".{result_path.name}.tmp")
+    temporary_path.write_text(
+        yaml.safe_dump(summary, sort_keys=False, allow_unicode=False),
+        encoding="utf-8",
+    )
+    temporary_path.replace(result_path)
+    print(f"[RoboLab] refreshed server summary: {result_path}")
+    return result_path
+
+
+def _main() -> None:
+    parser = argparse.ArgumentParser(description="RoboLab result summary maintenance")
+    parser.add_argument("--refresh-server-summary", metavar="RESULT_YAML")
+    parser.add_argument("--server-log")
+    args = parser.parse_args()
+    if not args.refresh_server_summary:
+        parser.error("--refresh-server-summary is required")
+    refresh_result_yaml_server_summary(args.refresh_server_summary, args.server_log)
+
+
+if __name__ == "__main__":
+    _main()

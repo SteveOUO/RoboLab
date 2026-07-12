@@ -2,6 +2,8 @@
 # SPDX-License-Identifier: CC-BY-NC-4.0
 
 import logging
+import math
+import time
 
 import numpy as np
 import torch
@@ -18,6 +20,12 @@ class Cosmos3Client(InferenceClient):
 
     IMAGE_W = 640
     IMAGE_H = 360
+    _SUPPORTED_CAMERA_KEYS = {
+        "observation/exterior_image_1_left": "left_image",
+        "observation/exterior_image_2_left": "right_image",
+        "observation/wrist_image_left": "wrist_image",
+    }
+
     def __init__(
         self,
         remote_host: str = "localhost",
@@ -26,6 +34,7 @@ class Cosmos3Client(InferenceClient):
         remote_uri: str | None = None,
     ) -> None:
         super().__init__()
+        self._profile_sections: list[tuple[str, float]] = []
         self._remote_host = remote_host
         self._remote_port = int(remote_port)
         self._remote_uri = remote_uri
@@ -39,7 +48,35 @@ class Cosmos3Client(InferenceClient):
         display = remote_uri if remote_uri is not None else f"{self._remote_host}:{self._remote_port}"
         print(f"[{self.__class__.__name__}] Awaiting for server on {display} to be ready...")
         self.client = self._connect()
+        self._server_metadata = self.client.get_server_metadata()
+        self._configure_server_metadata()
         print(f"[{self.__class__.__name__}] Connected to {display}.")
+
+    def _configure_server_metadata(self) -> None:
+        if "image_height" in self._server_metadata or "image_width" in self._server_metadata:
+            if "image_height" not in self._server_metadata or "image_width" not in self._server_metadata:
+                raise ValueError("Cosmos3 metadata must provide both image_height and image_width.")
+            self._image_h = int(self._server_metadata["image_height"])
+            self._image_w = int(self._server_metadata["image_width"])
+        raw_keys = self._server_metadata.get("required_camera_keys")
+        if raw_keys is None:
+            self._camera_request_keys = None
+            return
+        if not isinstance(raw_keys, (list, tuple)):
+            raise TypeError("Cosmos3 required_camera_keys metadata must be a list.")
+        selected = []
+        for raw_key in raw_keys:
+            key = str(raw_key)
+            if key not in self._SUPPORTED_CAMERA_KEYS:
+                raise ValueError(
+                    f"Cosmos3 server requested unsupported camera key {key!r}; "
+                    f"supported={sorted(self._SUPPORTED_CAMERA_KEYS)}."
+                )
+            if key not in selected:
+                selected.append(key)
+        if not selected:
+            raise ValueError("Cosmos3 required_camera_keys must not be empty.")
+        self._camera_request_keys = tuple(selected)
 
     def _connect(self) -> websocket_client_policy.WebsocketClientPolicy:
         if self._remote_uri is not None:
@@ -67,6 +104,8 @@ class Cosmos3Client(InferenceClient):
                     max_retries,
                 )
                 self.client = self._connect()
+                self._server_metadata = self.client.get_server_metadata()
+                self._configure_server_metadata()
                 self._chunks.clear()
                 self._counters.clear()
 
@@ -80,38 +119,84 @@ class Cosmos3Client(InferenceClient):
                 f"missing={missing_image_keys}, available={list(image_obs)}."
             )
 
-        left_image = image_obs["over_shoulder_left_camera"][env_id].clone().detach().cpu().numpy()
-        right_image = image_obs["over_shoulder_right_camera"][env_id].clone().detach().cpu().numpy()
-        wrist_image = image_obs["wrist_cam"][env_id].clone().detach().cpu().numpy()
+        image_tensors = [image_obs[key][env_id].detach() for key in required_image_keys]
+        for image in image_tensors:
+            if image.ndim != 3 or int(image.shape[-1]) != 3:
+                raise ValueError(f"Cosmos3 camera image must be [H,W,3], got {tuple(image.shape)}.")
+        batched_images = torch.stack(image_tensors, dim=0)
+        if batched_images.dtype != torch.uint8:
+            batched_images = batched_images.clamp(0, 255).to(torch.uint8)
+        image_arrays = batched_images.contiguous().cpu().numpy()
+        resized_images = [image_tools.resize_with_pad(image, self._image_h, self._image_w) for image in image_arrays]
 
         robot_state = raw_obs["proprio_obs"]
-        joint_position = robot_state["arm_joint_pos"][env_id].clone().detach().cpu().numpy().astype(np.float32)
-        gripper_position = robot_state["gripper_pos"][env_id].clone().detach().cpu().numpy().astype(np.float32)
+        joint_tensor = robot_state["arm_joint_pos"][env_id].detach().reshape(-1)
+        gripper_tensor = robot_state["gripper_pos"][env_id].detach().reshape(-1)
+        if joint_tensor.numel() != 7 or gripper_tensor.numel() != 1:
+            raise ValueError(
+                f"Cosmos3 state must be joint[7]+gripper[1], got {joint_tensor.numel()}/{gripper_tensor.numel()}."
+            )
+        state = torch.cat([joint_tensor, gripper_tensor], dim=0).float().cpu().numpy().astype(np.float32)
 
         return {
-            "left_image": left_image,
-            "right_image": right_image,
-            "wrist_image": wrist_image,
-            "joint_position": joint_position,
-            "gripper_position": gripper_position,
+            "left_image": resized_images[0],
+            "right_image": resized_images[1],
+            "wrist_image": resized_images[2],
+            "joint_position": state[:7],
+            "gripper_position": state[7:8],
         }
 
     def _pack_request(self, extracted_obs: dict, instruction: str) -> dict:
-        left = image_tools.resize_with_pad(extracted_obs["left_image"], self._image_h, self._image_w)
-        wrist = image_tools.resize_with_pad(extracted_obs["wrist_image"], self._image_h, self._image_w)
-        right = image_tools.resize_with_pad(extracted_obs["right_image"], self._image_h, self._image_w)
-        return {
-            "observation/image": self._compose_observation_image_from_views(wrist=wrist, left=left, right=right),
-            "observation/exterior_image_1_left": left,
-            "observation/exterior_image_2_left": right,
-            "observation/wrist_image_left": wrist,
+        request = {
             "observation/joint_position": extracted_obs["joint_position"],
             "observation/gripper_position": extracted_obs["gripper_position"],
             "prompt": instruction,
         }
+        views = {wire_key: extracted_obs[source_key] for wire_key, source_key in self._SUPPORTED_CAMERA_KEYS.items()}
+        if self._camera_request_keys is not None:
+            request.update({key: views[key] for key in self._camera_request_keys})
+            return request
+
+        # Compatibility with older servers that publish no camera metadata.
+        request.update(views)
+        request["observation/image"] = self._compose_observation_image_from_views(
+            wrist=extracted_obs["wrist_image"],
+            left=extracted_obs["left_image"],
+            right=extracted_obs["right_image"],
+        )
+        return request
 
     def _query_server(self, request: dict) -> dict:
-        return self._infer_with_retry(request)
+        started = time.perf_counter()
+        response = self._infer_with_retry(request)
+        self._record_profile("inference_latency", time.perf_counter() - started)
+        self._record_server_timing(response)
+        return response
+
+    def consume_profile_sections(self) -> list[tuple[str, float]]:
+        """Return and clear timings produced by completed WebSocket refreshes."""
+
+        sections = self._profile_sections
+        self._profile_sections = []
+        return sections
+
+    def _record_profile(self, name: str, elapsed: float) -> None:
+        self._profile_sections.append((name, float(elapsed)))
+
+    def _record_server_timing(self, response: dict) -> None:
+        timing = response.get("server_timing")
+        if not isinstance(timing, dict):
+            return
+        for wire_key, section_name in (
+            ("infer_ms", "server_infer_latency"),
+            ("prev_total_ms", "server_prev_total_latency"),
+        ):
+            try:
+                elapsed_ms = float(timing[wire_key])
+            except (KeyError, TypeError, ValueError):
+                continue
+            if elapsed_ms >= 0.0 and math.isfinite(elapsed_ms):
+                self._record_profile(section_name, elapsed_ms / 1000.0)
 
     def _unpack_response(self, response: dict) -> np.ndarray:
         if "action" not in response:
@@ -127,16 +212,17 @@ class Cosmos3Client(InferenceClient):
         return chunk
 
     def _build_visualization(self, extracted_obs: dict) -> np.ndarray:
-        left = image_tools.resize_with_pad(extracted_obs["left_image"], self._image_h, self._image_w)
-        wrist = image_tools.resize_with_pad(extracted_obs["wrist_image"], self._image_h, self._image_w)
-        right = image_tools.resize_with_pad(extracted_obs["right_image"], self._image_h, self._image_w)
-        return np.concatenate((left, wrist, right), axis=1)
+        return np.concatenate(
+            (extracted_obs["left_image"], extracted_obs["wrist_image"], extracted_obs["right_image"]),
+            axis=1,
+        )
 
     def _compose_observation_image(self, extracted_obs: dict) -> np.ndarray:
-        wrist = image_tools.resize_with_pad(extracted_obs["wrist_image"], self._image_h, self._image_w)
-        left = image_tools.resize_with_pad(extracted_obs["left_image"], self._image_h, self._image_w)
-        right = image_tools.resize_with_pad(extracted_obs["right_image"], self._image_h, self._image_w)
-        return self._compose_observation_image_from_views(wrist=wrist, left=left, right=right)
+        return self._compose_observation_image_from_views(
+            wrist=extracted_obs["wrist_image"],
+            left=extracted_obs["left_image"],
+            right=extracted_obs["right_image"],
+        )
 
     def _compose_observation_image_from_views(
         self,

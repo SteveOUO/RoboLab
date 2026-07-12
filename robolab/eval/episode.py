@@ -14,14 +14,28 @@ import logging
 import os
 import re
 import time
-from collections.abc import Sequence
 from collections import defaultdict
+from collections.abc import Sequence
 
 import cv2
 import torch
 from tqdm import tqdm
 
 logger = logging.getLogger(__name__)
+
+
+def _timing_percentile(values: list[float], percentile: float) -> float:
+    """Return a linearly interpolated percentile for non-empty samples."""
+
+    ordered = sorted(values)
+    if len(ordered) == 1:
+        return ordered[0]
+    rank = (len(ordered) - 1) * percentile / 100.0
+    lower = int(rank)
+    upper = min(lower + 1, len(ordered) - 1)
+    weight = rank - lower
+    return ordered[lower] * (1.0 - weight) + ordered[upper] * weight
+
 
 class TimingStats:
     """Simple timing utility for profiling code sections."""
@@ -48,7 +62,27 @@ class TimingStats:
         for name, times in self.times.items():
             d[f"{name}_s"] = round(sum(times), 3)
             d[f"{name}_avg_ms"] = round(sum(times) / len(times) * 1000, 1) if times else 0
-        nested_timing_names = {"action_tensor_build"}
+        inference_times = self.times.get("inference_latency", [])
+        if inference_times:
+            samples_ms = [round(elapsed * 1000.0, 3) for elapsed in inference_times]
+            d.update(
+                {
+                    "inference_latency_count": len(inference_times),
+                    "inference_latency_total_s": round(sum(inference_times), 6),
+                    "inference_latency_avg_ms": round(sum(inference_times) / len(inference_times) * 1000.0, 3),
+                    "inference_latency_min_ms": round(min(inference_times) * 1000.0, 3),
+                    "inference_latency_p50_ms": round(_timing_percentile(inference_times, 50.0) * 1000.0, 3),
+                    "inference_latency_p95_ms": round(_timing_percentile(inference_times, 95.0) * 1000.0, 3),
+                    "inference_latency_max_ms": round(max(inference_times) * 1000.0, 3),
+                    "inference_latency_samples_ms": samples_ms,
+                }
+            )
+        nested_timing_names = {
+            "action_tensor_build",
+            "inference_latency",
+            "server_infer_latency",
+            "server_prev_total_latency",
+        }
         top_level_times = [
             times
             for name, times in self.times.items()
@@ -58,15 +92,16 @@ class TimingStats:
         d["it_per_sec"] = round(num_steps / d["wall_total_s"], 2) if d["wall_total_s"] > 0 else 0
         return d
 
+
 from robolab.constants import VISUALIZE, get_output_dir
 from robolab.core.logging.results import get_all_env_subtask_infos
-from robolab.core.observations.observation_utils import unpack_image_obs, unpack_viewport_cams
 from robolab.core.utils.video_utils import VideoWriter
-from robolab.core.world.world_state import get_world
 from robolab.eval.base_client import InferenceClient
 
 
-def _clients_for_envs(client: InferenceClient | Sequence[InferenceClient], num_envs: int) -> tuple[list[InferenceClient], list[InferenceClient]]:
+def _clients_for_envs(
+    client: InferenceClient | Sequence[InferenceClient], num_envs: int
+) -> tuple[list[InferenceClient], list[InferenceClient]]:
     if isinstance(client, Sequence) and not isinstance(client, InferenceClient):
         clients = list(client)
         if len(clients) != num_envs:
@@ -87,7 +122,17 @@ def _unique_clients(clients: Sequence[InferenceClient]) -> list[InferenceClient]
     return list(dict.fromkeys(clients))
 
 
-def run_episode(env, env_cfg, episode, client: InferenceClient | Sequence[InferenceClient], *, headless=False, save_videos=True, video_mode="all", max_episode_steps: int | None = None):
+def run_episode(
+    env,
+    env_cfg,
+    episode,
+    client: InferenceClient | Sequence[InferenceClient],
+    *,
+    headless=False,
+    save_videos=True,
+    video_mode="all",
+    max_episode_steps: int | None = None,
+):
     """Run a policy-controlled episode across all parallel envs.
 
     The policy client is constructed by the caller (typically via
@@ -109,6 +154,11 @@ def run_episode(env, env_cfg, episode, client: InferenceClient | Sequence[Infere
             subtask_status: list of per-step subtask info dicts
             timing: dict with wall-clock timing breakdown
     """
+    # IsaacLab-backed helpers stay local so CPU-only timing/result tooling can
+    # import this module without bootstrapping Omniverse.
+    from robolab.core.observations.observation_utils import unpack_image_obs, unpack_viewport_cams
+    from robolab.core.world.world_state import get_world
+
     timer = TimingStats()
 
     obs, _ = env.reset()
@@ -116,15 +166,18 @@ def run_episode(env, env_cfg, episode, client: InferenceClient | Sequence[Infere
     max_steps = env.max_episode_length
     if max_episode_steps is not None:
         max_steps = min(max_steps, int(max_episode_steps))
-    video_fps = 1 / (env_cfg.sim.render_interval * env_cfg.sim.dt) # Hz
+    video_fps = 1 / (env_cfg.sim.render_interval * env_cfg.sim.dt)  # Hz
     instruction = env_cfg.instruction
     # Pull action dim from the env's action manager (IsaacLab canonical),
     # falling back to the gym action space if the manager isn't available.
-    action_dim = getattr(
-        getattr(env, "action_manager", None),
-        "total_action_dim",
-        None,
-    ) or env.action_space.shape[-1]
+    action_dim = (
+        getattr(
+            getattr(env, "action_manager", None),
+            "total_action_dim",
+            None,
+        )
+        or env.action_space.shape[-1]
+    )
 
     subtask_status = []
 
@@ -133,7 +186,7 @@ def run_episode(env, env_cfg, episode, client: InferenceClient | Sequence[Infere
         policy_client.reset()
 
     # Set up per-run HDF5 file and per-env demo indices
-    if env.recorder_manager is not None and hasattr(env.recorder_manager, 'set_hdf5_file'):
+    if env.recorder_manager is not None and hasattr(env.recorder_manager, "set_hdf5_file"):
         env.recorder_manager.set_hdf5_file(f"run_{episode}.hdf5")
         for env_id in range(env.num_envs):
             env.recorder_manager.set_episode_index(env_id, env_ids=[env_id])
@@ -141,7 +194,7 @@ def run_episode(env, env_cfg, episode, client: InferenceClient | Sequence[Infere
     # Setup per-env streaming video writers
     save_sensor = save_videos and video_mode in ("all", "sensor")
     save_viewport = save_videos and video_mode in ("all", "viewport")
-    cleaned_instruction = re.sub(r'[^\w\s]', '', instruction).replace(' ', '_')
+    cleaned_instruction = re.sub(r"[^\w\s]", "", instruction).replace(" ", "_")
     # Define unconditionally so the finally clause below can iterate them either way.
     video_writers_obs: list[VideoWriter] = []
     video_writers_viewport: list[VideoWriter] = []
@@ -157,13 +210,13 @@ def run_episode(env, env_cfg, episode, client: InferenceClient | Sequence[Infere
 
     import omni.kit.app
     import omni.timeline
+
     timeline = omni.timeline.get_timeline_interface()
     kit_app = omni.kit.app.get_app()
 
     actual_steps = 0
     try:
         for step in tqdm(range(max_steps)):
-
             while not timeline.is_playing():
                 kit_app.update()
 
